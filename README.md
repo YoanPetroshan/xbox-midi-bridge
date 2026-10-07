@@ -7,6 +7,15 @@ Turn an Xbox Series controller (Bluetooth or USB) into a MIDI controller for
 graphical interface, and the two sticks drive the Pan/Tilt of moving heads in **rate mode**:
 the stick sets the speed, and a released stick leaves the head where it is.
 
+> **Made for Lightkey, works with anything that takes MIDI.** The app was created to control
+> Lightkey, but it only sends standard MIDI (Note, CC, Program Change) to a virtual MIDI port.
+> Any macOS program that accepts MIDI input can use it: other lighting software, DAWs,
+> VJ and video software, and so on. The Lightkey-specific parts of this README are just
+> the setup steps for Lightkey.
+
+> **Built with [Claude Code](https://claude.com/claude-code).** The code, tests and
+> documentation of this project were written with Anthropic's Claude Code.
+
 ![Xbox MIDI Bridge](docs/screenshot.png)
 
 ## Features
