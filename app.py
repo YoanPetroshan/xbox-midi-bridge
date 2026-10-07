@@ -29,7 +29,9 @@ def frontmost_app() -> str:
 
 def run_diag() -> int:
     from input_reader import ReaderProcess
-    from mapping import AXIS_IDS, BUTTON_IDS, INPUT_LABELS, UNRELIABLE_INPUTS
+    import mapping
+    from mapping import (AXIS_IDS, BUTTON_IDS, CORE_AXIS_IDS, CORE_BUTTON_IDS, GYRO_IDS, INPUT_LABELS,
+                         PADDLE_IDS, TOUCH_IDS, unreliable_inputs)
 
     import signal
     sys.stdout.reconfigure(line_buffering=True)
@@ -47,6 +49,8 @@ def run_diag() -> int:
     fronts: dict[str, int] = {}
     front, front_t = frontmost_app(), time.time()
     connected = False
+    relevant = list(CORE_BUTTON_IDS) + list(CORE_AXIS_IDS)  # extended with what the pad reports
+    touching = False
     try:
         while True:
             if time.time() - front_t > 1.0:
@@ -58,6 +62,25 @@ def run_diag() -> int:
                 elif kind == "connected":
                     connected = True
                     print(tr("[connected] {}", "[свързан] {}").format(msg[1]))
+                    info = msg[3] if len(msg) > 3 else {}
+                    family = info.get("family", "xbox")
+                    mapping.set_family(family)
+                    yes, no = tr("yes", "да"), tr("no", "не")
+                    extras = [b for b in info.get("has", []) if b == "touchpad" or b in PADDLE_IDS]
+                    print(tr("  Type: {} · touchpad: {} · gyro: {} · light bar: {} · extra buttons: {}",
+                             "  Вид: {} · тъчпад: {} · жироскоп: {} · светлинна лента: {} · допълнителни бутони: {}")
+                          .format("PlayStation" if family == "playstation" else "Xbox",
+                                  yes if info.get("touchpad") else no, yes if info.get("gyro") else no,
+                                  yes if info.get("led") else no, ", ".join(extras) or no))
+                    print(tr("  Direct SDL access (touchpad/gyro/light bar): {}",
+                             "  Директен достъп до SDL (тъчпад/жиро/лента): {}")
+                          .format(tr("works", "работи") if info.get("sdl_direct")
+                                  else tr("NOT available", "НЕ е наличен")))
+                    relevant = list(CORE_BUTTON_IDS) + list(CORE_AXIS_IDS) + extras
+                    if info.get("touchpad"):
+                        relevant += list(TOUCH_IDS) + (["touchpad"] if "touchpad" not in extras else [])
+                    if info.get("gyro"):
+                        relevant += list(GYRO_IDS)
                     if msg[2]:
                         print(tr("  SDL mapping:", "  SDL мапинг:"), ", ".join(f"{k}:{v}" for k, v in msg[2].items()))
                 elif kind == "disconnected":
@@ -66,8 +89,17 @@ def run_diag() -> int:
                 elif kind == "error":
                     print(tr("[error] {}", "[грешка] {}").format(msg[1]))
                 elif kind == "state":
-                    _, buttons, axes = msg
+                    buttons, axes = msg[1], msg[2]
+                    down = bool(msg[3]) if len(msg) > 3 else False
                     events = []
+                    if down != touching:
+                        touching = down
+                        vals = dict(zip(AXIS_IDS, axes))
+                        events.append(tr("touchpad finger {} at x={:.2f} y={:.2f}", "тъчпад пръст {} при x={:.2f} y={:.2f}")
+                                      .format(tr("down", "долу") if down else tr("up", "вдигнат"),
+                                              vals["touchx"], vals["touchy"]))
+                        if down:
+                            seen.update(TOUCH_IDS)
                     for b, p in zip(BUTTON_IDS, buttons):
                         if p != prev_b[b]:
                             prev_b[b] = p
@@ -76,7 +108,10 @@ def run_diag() -> int:
                             if p:
                                 seen.add(b)
                     for a, v in zip(AXIS_IDS, axes):
-                        if abs(v - prev_a[a]) >= 0.1 or (v == 0.0) != (prev_a[a] == 0.0):
+                        if a in TOUCH_IDS:
+                            continue  # reported as finger down/up above
+                        step = 0.25 if a in GYRO_IDS else 0.1  # the gyro is noisy: only clear moves
+                        if abs(v - prev_a[a]) >= step or (a not in GYRO_IDS and (v == 0.0) != (prev_a[a] == 0.0)):
                             prev_a[a] = v
                             events.append(tr("axis   {:<13} ({}) {:+.3f}", "ос     {:<13} ({}) {:+.3f}").format(a, INPUT_LABELS[a], v))
                             if abs(v) > 0.3:
@@ -96,11 +131,11 @@ def run_diag() -> int:
 
     print(tr("\n──────── Summary ────────", "\n──────── Обобщение ────────"))
     print(tr("Connected at the end:", "Свързан в края:"), tr("yes", "да") if connected else tr("no", "не"))
-    all_ids = BUTTON_IDS + AXIS_IDS
+    all_ids = [i for i in BUTTON_IDS + AXIS_IDS if i in relevant]
     print(tr("Detected inputs:  ", "Открити входове:  "), ", ".join(i for i in all_ids if i in seen) or tr("none", "няма"))
     missing = [i for i in all_ids if i not in seen]
     print(tr("Missing inputs:   ", "Неоткрити входове:"), ", ".join(missing) or tr("none", "няма"))
-    for i in UNRELIABLE_INPUTS:
+    for i in unreliable_inputs():
         if i not in seen:
             print(tr("  · {} ({}) was not reported: normal on macOS over Bluetooth.",
                      "  · {} ({}) не е докладван: на macOS по Bluetooth е нормално.").format(INPUT_LABELS[i], i))

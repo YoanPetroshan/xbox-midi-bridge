@@ -80,6 +80,7 @@ class TestPanel(QWidget):
         grid = QGridLayout()
         grid.setVerticalSpacing(10)
         self.rows: dict[str, tuple[QLabel, QSlider, QLabel]] = {}
+        self._row_widgets: dict[str, tuple] = {}
         for i, a in enumerate(AXIS_IDS):
             name = QLabel()
             sl = QSlider(Qt.Horizontal)
@@ -97,11 +98,30 @@ class TestPanel(QWidget):
             grid.addWidget(val, i * 2 + 1, 1)
             grid.addWidget(c, i * 2 + 1, 2)
             self.rows[a] = (name, sl, val)
+            self._row_widgets[a] = (name, sl, val, c)
         lay.addLayout(grid)
         center = QPushButton(tr("Center all Pan/Tilt", "Центрирай всички Pan/Tilt"))
         center.clicked.connect(self.engine.center_all)
         lay.addWidget(center)
         lay.addStretch()
+
+    def set_visible(self, ids) -> None:
+        """Only show sliders for the axes the current controller has."""
+        self._visible = set(ids)
+        self._apply_visibility()
+
+    def _apply_visibility(self) -> None:
+        # One slider per CC: touchpad and gyro often share Pan/Tilt's CC with a stick.
+        shown = set()
+        prof = self.get_profile()
+        for a, widgets in self._row_widgets.items():
+            m = prof.axes[a]
+            key = (m.channel, m.cc)
+            ok = a in getattr(self, "_visible", set(self._row_widgets)) and key not in shown
+            if ok:
+                shown.add(key)
+            for w in widgets:
+                w.setVisible(ok)
 
     def _moved(self, a, slider):
         if slider.isSliderDown() or slider.hasFocus():
@@ -111,10 +131,12 @@ class TestPanel(QWidget):
 
     def refresh(self):
         prof = self.get_profile()
+        self._apply_visibility()
         for a, (name, sl, val) in self.rows.items():
             m = prof.axes[a]
             label = m.label or INPUT_LABELS[a]
-            kind = tr("rate", "скоростен") if m.mode == "rate" else tr("absolute", "абсолютен")
+            kind = {"rate": tr("rate", "скоростен"), "relative": tr("drag", "плъзгане")}.get(
+                m.mode, tr("absolute", "абсолютен"))
             ch = tr("Ch. {}", "Кан. {}").format(m.channel)
             extra = (tr(" · 14-bit", " · 14-бит") if m.hires else "") + (
                 "" if m.enabled else tr(" · disabled", " · изключен"))
@@ -138,6 +160,7 @@ class SettingsPanel(QWidget):
     controllerChosen = Signal(object)  # None = automatic
     resendRequested = Signal()
     languageChosen = Signal(str)
+    viewChosen = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -173,6 +196,16 @@ class SettingsPanel(QWidget):
         self.controller.setMinimumContentsLength(12)
         self.controller.activated.connect(lambda _: self.controllerChosen.emit(self.controller.currentData()))
         form.addRow(tr("Controller", "Контролер"), self.controller)
+        self.view_family = QComboBox()
+        for code, name in (("auto", tr("Automatic (connected controller)", "Автоматично (свързания контролер)")),
+                           ("xbox", "Xbox"), ("playstation", "PlayStation (DualSense / DualShock 4)")):
+            self.view_family.addItem(name, code)
+        self.view_family.setToolTip(tr("Which controller the diagram shows. Automatic follows the connected one;\n"
+                                       "choose one to set up a controller you don't have at hand.",
+                                       "Кой контролер показва схемата. Автоматично следва свързания;\n"
+                                       "избери ръчно, за да настроиш контролер, който не е при теб."))
+        self.view_family.activated.connect(lambda _: self.viewChosen.emit(self.view_family.currentData()))
+        form.addRow(tr("Diagram", "Схема"), self.view_family)
 
         self.fine = QDoubleSpinBox()
         self.fine.setRange(0.05, 1.0)
@@ -204,6 +237,11 @@ class SettingsPanel(QWidget):
         self.resend = QCheckBox(tr("Send them on startup", "Прати ги при старт"))
         form.addRow("", self.persist)
         form.addRow("", self.resend)
+        self.led = QCheckBox(tr("Light bar colour per layer (PlayStation)", "Цвят на лентата по слой (PlayStation)"))
+        self.led.setToolTip(tr("The controller's light bar shows which layer is active.",
+                               "Светлинната лента на контролера показва кой слой е активен."))
+        form.addRow("", self.led)
+        self.led.toggled.connect(lambda *_: self.changed.emit())
         resend_now = QPushButton(tr("Send current Pan/Tilt", "Прати текущите Pan/Tilt"))
         resend_now.clicked.connect(self.resendRequested.emit)
         form.addRow("", resend_now)

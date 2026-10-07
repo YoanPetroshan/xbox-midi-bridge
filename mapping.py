@@ -16,11 +16,11 @@ CONFIG_DIR = Path(os.path.expanduser(f"~/Library/Application Support/{APP_NAME}"
 PROFILES_DIR = CONFIG_DIR / "profiles"
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 DEFAULT_PROFILE_NAME = tr("Default", "По подразбиране")
-PROFILE_VERSION = 3
+PROFILE_VERSION = 4
 
 # --- Controller inputs (standard SDL Game Controller API names) ---
 
-# (id, UI label)
+# (id, UI label). Labels are the Xbox names; PlayStation names are in FAMILY_LABELS.
 BUTTONS: list[tuple[str, str]] = [
     ("a", "A"),
     ("b", "B"),
@@ -38,6 +38,12 @@ BUTTONS: list[tuple[str, str]] = [
     ("dpright", "D-pad →"),
     ("guide", "Xbox"),
     ("misc1", "Share"),
+    # Not on every controller: touchpad click (PlayStation), back paddles (Elite / DualSense Edge)
+    ("touchpad", tr("Touchpad click", "Тъчпад клик")),
+    ("paddle1", tr("Paddle 1", "Заден 1")),
+    ("paddle2", tr("Paddle 2", "Заден 2")),
+    ("paddle3", tr("Paddle 3", "Заден 3")),
+    ("paddle4", tr("Paddle 4", "Заден 4")),
 ]
 
 AXES: list[tuple[str, str]] = [
@@ -47,13 +53,53 @@ AXES: list[tuple[str, str]] = [
     ("righty", tr("Right stick Y", "Десен стик Y")),
     ("lefttrigger", "LT"),
     ("righttrigger", "RT"),
+    # PlayStation only: touchpad surface (finger 1) and gyroscope
+    ("touchx", tr("Touchpad X", "Тъчпад X")),
+    ("touchy", tr("Touchpad Y", "Тъчпад Y")),
+    ("gyroyaw", tr("Gyro turn", "Жиро завъртане")),
+    ("gyropitch", tr("Gyro tilt", "Жиро наклон")),
 ]
 
 BUTTON_IDS = [b for b, _ in BUTTONS]
 AXIS_IDS = [a for a, _ in AXES]
+STICK_IDS = ("leftx", "lefty", "rightx", "righty")
 TRIGGER_IDS = ("lefttrigger", "righttrigger")
-INPUT_LABELS = dict(BUTTONS + AXES)
-# Inputs macOS may not report over Bluetooth.
+TOUCH_IDS = ("touchx", "touchy")
+GYRO_IDS = ("gyroyaw", "gyropitch")
+# Shown on every diagram; the rest only when the controller has them.
+CORE_BUTTON_IDS = BUTTON_IDS[:16]
+CORE_AXIS_IDS = list(STICK_IDS + TRIGGER_IDS)
+PADDLE_IDS = ("paddle1", "paddle2", "paddle3", "paddle4")
+NEW_IN_V4 = ("touchpad",) + PADDLE_IDS
+
+FAMILIES = ("xbox", "playstation")
+FAMILY_LABELS = {
+    "xbox": dict(BUTTONS + AXES),
+    "playstation": dict(BUTTONS + AXES) | {
+        "a": "✕ Cross", "b": "○ Circle", "x": "□ Square", "y": "△ Triangle",
+        "leftshoulder": "L1", "rightshoulder": "R1", "lefttrigger": "L2", "righttrigger": "R2",
+        "back": "Create", "start": "Options", "guide": "PS", "misc1": tr("Mic (mute)", "Mic (заглушаване)"),
+    },
+}
+# The labels in use. Updated in place by set_family(), so every lookup follows the controller.
+INPUT_LABELS = dict(FAMILY_LABELS["xbox"])
+CURRENT_FAMILY = ["xbox"]
+
+
+def set_family(family: str) -> None:
+    if family not in FAMILY_LABELS:
+        family = "xbox"
+    CURRENT_FAMILY[0] = family
+    INPUT_LABELS.clear()
+    INPUT_LABELS.update(FAMILY_LABELS[family])
+
+
+def unreliable_inputs(family: str | None = None) -> tuple[str, ...]:
+    """Inputs macOS may not report over Bluetooth (the DualSense reports its Mic button)."""
+    return ("guide",) if (family or CURRENT_FAMILY[0]) == "playstation" else ("guide", "misc1")
+
+
+# Inputs macOS may not report over Bluetooth (Xbox; see unreliable_inputs()).
 UNRELIABLE_INPUTS = ("guide", "misc1")
 
 # Buttons that physically cannot be held together.
@@ -61,7 +107,7 @@ IMPOSSIBLE_PAIRS = (("dpup", "dpdown"), ("dpleft", "dpright"))
 
 # --- Models ---
 
-BUTTON_ACTIONS = ("midi", "modifier", "center", "center_left", "center_right", "fine")
+BUTTON_ACTIONS = ("midi", "modifier", "center", "center_left", "center_right", "fine", "gyro")
 # Axes each "center" action glides back to the middle (rate-mode axes only).
 CENTER_TARGETS = {
     "center": ("leftx", "lefty", "rightx", "righty"),
@@ -70,14 +116,14 @@ CENTER_TARGETS = {
 }
 BUTTON_TYPES = ("note", "cc", "pc")
 BUTTON_MODES = ("momentary", "toggle", "value")
-AXIS_MODES = ("absolute", "rate")
+AXIS_MODES = ("absolute", "rate", "relative")  # relative: touchpad drag, like a trackpad
 CURVES = ("linear", "expo")
 
 
 @dataclass
 class ButtonMapping:
     enabled: bool = True
-    action: str = "midi"  # midi | modifier | center | center_left | center_right | fine
+    action: str = "midi"  # midi | modifier | center | center_left | center_right | fine | gyro
     type: str = "note"  # note | cc | pc
     mode: str = "momentary"  # momentary | toggle | value (value: CC only)
     channel: int = 1  # 1..16
@@ -111,7 +157,10 @@ class AxisMapping:
     deadzone: float = 0.08
     curve: str = "linear"  # linear | expo
     expo: float = 0.6  # 0..1, strength of the expo curve
-    max_speed: float = 0.5  # rate mode: fraction of the full range per second at full deflection
+    max_speed: float = 0.5  # sensitivity. rate/gyro: fraction of the range per second at full
+    #                         deflection; relative (touch drag): fraction of the range per full swipe
+    span: float = 1.0  # sensitivity in absolute mode: fraction of the range full deflection covers
+    hold: bool = False  # absolute sticks: keep the position when the stick springs back (pick-up)
     invert: bool = False
     label: str = ""
 
@@ -128,6 +177,8 @@ class AxisMapping:
         m.deadzone = _clampf(float(m.deadzone), 0.0, 0.9)
         m.expo = _clampf(float(m.expo), 0.0, 1.0)
         m.max_speed = _clampf(float(m.max_speed), 0.01, 10.0)
+        m.span = _clampf(float(m.span), 0.05, 1.0)
+        m.hold = bool(m.hold)
         return m
 
 
@@ -136,6 +187,7 @@ class ProfileOptions:
     fine_factor: float = 0.25  # stick speed multiplier while a "fine" button is held
     max_rate_hz: int = 120  # max CC messages per second per axis
     center_time: float = 1.0  # seconds to glide back to center (0 = instant)
+    led_layers: bool = True  # PlayStation light bar shows the active layer's colour
 
 
 @dataclass
@@ -202,7 +254,7 @@ class Profile:
                 out[sig] = out.get(sig, 0) + 1
         return out
 
-    def free_note(self, start: int = 52, channel: int = 1) -> int:
+    def free_note(self, start: int = 57, channel: int = 1) -> int:
         used = {sig[2] for sig in self.used_signatures() if sig[0] == "note" and sig[1] == channel}
         for n in list(range(start, 128)) + list(range(0, start)):
             if n not in used:
@@ -271,6 +323,14 @@ class Profile:
                 b = p.buttons[bid]
                 if (b.action, b.type, b.mode, b.channel, b.number) == ("midi", "note", "momentary", 1, note):
                     b.action = action
+        if int(data.get("version", 1)) < 4:
+            # v4 added the touchpad click and paddles: give them notes nobody uses yet.
+            saved = data.get("buttons") or {}
+            for bid in NEW_IN_V4:
+                if bid not in saved:
+                    p.buttons[bid].enabled = False
+                    p.buttons[bid].number = p.free_note(start=52)
+                    p.buttons[bid].enabled = True
         return p
 
     def clone(self, name: str | None = None) -> "Profile":
@@ -310,6 +370,7 @@ def default_profile(name: str = DEFAULT_PROFILE_NAME) -> Profile:
         "leftstick": 44, "rightstick": 45,
         "dpup": 46, "dpdown": 47, "dpleft": 48, "dpright": 49,
         "guide": 50, "misc1": 51,
+        "touchpad": 52, "paddle1": 53, "paddle2": 54, "paddle3": 55, "paddle4": 56,
     }
     buttons = {bid: ButtonMapping(number=notes[bid]) for bid in BUTTON_IDS}
     buttons["leftstick"].action = "center_left"
@@ -322,6 +383,12 @@ def default_profile(name: str = DEFAULT_PROFILE_NAME) -> Profile:
         "righty": AxisMapping(cc=13, label="Tilt 2", **rate),
         "lefttrigger": AxisMapping(cc=20, mode="absolute", deadzone=0.03),
         "righttrigger": AxisMapping(cc=21, mode="absolute", deadzone=0.03),
+        # Touchpad drag = fine aim for head 1; it shares CC 10/11 (and the value) with the left stick.
+        "touchx": AxisMapping(cc=10, label="Pan 1", mode="relative", deadzone=0.0, max_speed=0.5),
+        "touchy": AxisMapping(cc=11, label="Tilt 1", mode="relative", deadzone=0.0, max_speed=0.5),
+        # Gyro moves head 1 too, but only while a button with the "Gyro" function is held.
+        "gyroyaw": AxisMapping(cc=10, label="Pan 1", mode="rate", deadzone=0.02, max_speed=1.5, invert=True),
+        "gyropitch": AxisMapping(cc=11, label="Tilt 1", mode="rate", deadzone=0.02, max_speed=1.5),
     }
     return Profile(name=name, buttons=buttons, axes=axes)
 
@@ -344,6 +411,9 @@ def describe_button(m: ButtonMapping) -> str:
         return tr("Center right stick · Pan/Tilt 2 (smooth)", "Център десен стик · Pan/Tilt 2 (плавно)")
     if m.action == "fine":
         return tr("Fine (slow sticks)", "Фино (бавни стикове)")
+    if m.action == "gyro":
+        return (tr("Gyro on/off", "Жиро вкл./изкл.") if m.mode == "toggle"
+                else tr("Gyro (while held)", "Жиро (докато е натиснат)"))
     ch = tr("Ch. {}", "Кан. {}").format(m.channel)
     if m.type == "note":
         return f"Note {m.number} · {ch} · {MODE_NAMES[m.mode]}"
@@ -357,7 +427,8 @@ def describe_button(m: ButtonMapping) -> str:
 def describe_axis(m: AxisMapping) -> str:
     if not m.enabled:
         return tr("Disabled", "Изключен")
-    mode = tr("Rate", "Скоростен") if m.mode == "rate" else tr("Absolute", "Абсолютен")
+    mode = {"rate": tr("Rate", "Скоростен"), "relative": tr("Drag", "Плъзгане")}.get(
+        m.mode, tr("Absolute", "Абсолютен"))
     parts = [f"CC {m.cc}" + ("/" + str(m.cc + 32) if m.hires else ""), mode]
     if m.label:
         parts.append(m.label)

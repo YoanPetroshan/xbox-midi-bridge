@@ -1,6 +1,7 @@
 """Controller diagram with leader lines to labels showing the current mapping.
 
-Everything is painted with QPainter in 1200×720 logical coordinates and scaled.
+Everything is painted with QPainter in logical coordinates (1200 wide) and scaled.
+Two layouts: Xbox and PlayStation (DualSense / DualShock 4).
 The drawing is original (simple shapes), not a copy of protected artwork.
 """
 from __future__ import annotations
@@ -11,79 +12,100 @@ from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
-from mapping import (INPUT_LABELS, TRIGGER_IDS, UNRELIABLE_INPUTS, ButtonMapping, Profile,
-                     describe_axis, describe_button, layer_label, layer_mods, midi_signature)
+from mapping import (GYRO_IDS, INPUT_LABELS, PADDLE_IDS, TOUCH_IDS, TRIGGER_IDS, ButtonMapping,
+                     Profile, describe_axis, describe_button, layer_label, layer_mods, midi_signature,
+                     unreliable_inputs)
 from i18n import tr
 from ui import theme
 
-W, H = 1200.0, 720.0
-LABEL_W, LABEL_H = 262.0, 52.0
+W, BASE_H = 1200.0, 720.0  # the controller is drawn in 1200×720; the label columns may be taller
+LABEL_W = 262.0
 LEFT_X, RIGHT_X = 16.0, W - 16.0 - LABEL_W
-TOP_Y, STEP_Y = 22.0, 62.0
-
-# Part geometry
-LT_C, RT_C = QPointF(445, 186), QPointF(755, 186)
-LB_C, RB_C = QPointF(445, 228), QPointF(755, 228)
-LSTICK, RSTICK = QPointF(450, 322), QPointF(668, 418)
+TOP_Y = 22.0
 STICK_R, THUMB_R, STICK_TRAVEL = 40.0, 22.0, 18.0
-DPAD = QPointF(532, 418)
-FACE = QPointF(752, 322)
 FACE_OFF, FACE_R = 38.0, 17.0
-VIEW_C, MENU_C = QPointF(560, 320), QPointF(640, 320)
-GUIDE_C, SHARE_C = QPointF(600, 272), QPointF(600, 356)
+PS_FACE_COLORS = {"a": "#6c9ce8", "b": "#e0605e", "x": "#d77fc0", "y": "#3fbfa8"}
 
-FACE_POS = {
-    "y": QPointF(FACE.x(), FACE.y() - FACE_OFF),
-    "a": QPointF(FACE.x(), FACE.y() + FACE_OFF),
-    "x": QPointF(FACE.x() - FACE_OFF, FACE.y()),
-    "b": QPointF(FACE.x() + FACE_OFF, FACE.y()),
-}
-DPAD_POS = {
-    "dpup": QPointF(DPAD.x(), DPAD.y() - 22),
-    "dpdown": QPointF(DPAD.x(), DPAD.y() + 22),
-    "dpleft": QPointF(DPAD.x() - 22, DPAD.y()),
-    "dpright": QPointF(DPAD.x() + 22, DPAD.y()),
-}
 
-# Leader-line anchors and label order (top to bottom).
-ANCHORS = {
-    "lefttrigger": QPointF(LT_C.x() - 30, LT_C.y()),
-    "leftshoulder": QPointF(LB_C.x() - 40, LB_C.y()),
-    "lefty": QPointF(LSTICK.x(), LSTICK.y() - STICK_R),
-    "leftx": QPointF(LSTICK.x() - STICK_R, LSTICK.y()),
-    "leftstick": QPointF(LSTICK.x() - 20, LSTICK.y() + 34),
-    "back": VIEW_C,
-    "misc1": SHARE_C,
-    "dpup": DPAD_POS["dpup"],
-    "dpleft": DPAD_POS["dpleft"],
-    "dpright": DPAD_POS["dpright"],
-    "dpdown": DPAD_POS["dpdown"],
-    "righttrigger": QPointF(RT_C.x() + 30, RT_C.y()),
-    "rightshoulder": QPointF(RB_C.x() + 40, RB_C.y()),
-    "guide": GUIDE_C,
-    "y": FACE_POS["y"],
-    "start": MENU_C,
-    "b": FACE_POS["b"],
-    "x": FACE_POS["x"],
-    "a": FACE_POS["a"],
-    "righty": QPointF(RSTICK.x(), RSTICK.y() - STICK_R),
-    "rightx": QPointF(RSTICK.x() + STICK_R, RSTICK.y()),
-    "rightstick": QPointF(RSTICK.x() + 20, RSTICK.y() + 34),
-}
-LEFT_ORDER = ["lefttrigger", "leftshoulder", "lefty", "leftx", "leftstick", "back", "misc1",
-              "dpup", "dpleft", "dpright", "dpdown"]
-RIGHT_ORDER = ["righttrigger", "rightshoulder", "guide", "y", "start", "x", "b", "a",
-               "righty", "rightx", "rightstick"]
+def _cross(c: QPointF, off: float = 22.0) -> dict[str, QPointF]:
+    return {"dpup": QPointF(c.x(), c.y() - off), "dpdown": QPointF(c.x(), c.y() + off),
+            "dpleft": QPointF(c.x() - off, c.y()), "dpright": QPointF(c.x() + off, c.y())}
+
+
+def _face(c: QPointF, off: float = FACE_OFF) -> dict[str, QPointF]:
+    return {"y": QPointF(c.x(), c.y() - off), "a": QPointF(c.x(), c.y() + off),
+            "x": QPointF(c.x() - off, c.y()), "b": QPointF(c.x() + off, c.y())}
 
 
 @dataclass
-class LabelSlot:
-    input_id: str
-    rect: QRectF
-    left: bool
+class Layout:
+    """Where every part of one controller family sits, and the label order per column."""
+    family: str
+    lt: QPointF
+    rt: QPointF
+    lb: QPointF
+    rb: QPointF
+    lstick: QPointF
+    rstick: QPointF
+    dpad: QPointF
+    face: QPointF
+    back: QPointF
+    start: QPointF
+    guide: QPointF
+    misc1: QPointF
+    paddles: dict
+    left: list
+    right: list
+    body: QPainterPath
+    touchpad: QRectF | None = None
+    gyro: QPointF | None = None
+
+    @property
+    def dpad_pos(self):
+        return _cross(self.dpad)
+
+    @property
+    def face_pos(self):
+        return _face(self.face)
+
+    def centers(self) -> dict[str, QPointF]:
+        c = dict(self.face_pos)
+        c.update(self.dpad_pos)
+        c.update({"lefttrigger": self.lt, "righttrigger": self.rt, "leftshoulder": self.lb,
+                  "rightshoulder": self.rb, "back": self.back, "start": self.start,
+                  "guide": self.guide, "misc1": self.misc1,
+                  "leftstick": self.lstick, "rightstick": self.rstick})
+        c.update(self.paddles)
+        if self.touchpad is not None:
+            c["touchpad"] = self.touchpad.center()
+        return c
+
+    def anchors(self) -> dict[str, QPointF]:
+        a = self.centers()
+        a.update({
+            "lefttrigger": QPointF(self.lt.x() - 30, self.lt.y()),
+            "righttrigger": QPointF(self.rt.x() + 30, self.rt.y()),
+            "leftshoulder": QPointF(self.lb.x() - 40, self.lb.y()),
+            "rightshoulder": QPointF(self.rb.x() + 40, self.rb.y()),
+            "lefty": QPointF(self.lstick.x(), self.lstick.y() - STICK_R),
+            "leftx": QPointF(self.lstick.x() - STICK_R, self.lstick.y()),
+            "leftstick": QPointF(self.lstick.x() - 20, self.lstick.y() + 34),
+            "righty": QPointF(self.rstick.x(), self.rstick.y() - STICK_R),
+            "rightx": QPointF(self.rstick.x() + STICK_R, self.rstick.y()),
+            "rightstick": QPointF(self.rstick.x() + 20, self.rstick.y() + 34),
+        })
+        if self.touchpad is not None:
+            t = self.touchpad
+            a["touchx"] = QPointF(t.left() + 4, t.center().y() - 12)
+            a["touchy"] = QPointF(t.left() + 4, t.center().y() + 14)
+            a["touchpad"] = QPointF(t.right() - 4, t.center().y())
+        if self.gyro is not None:
+            a["gyroyaw"] = QPointF(self.gyro.x() + 10, self.gyro.y() - 4)
+            a["gyropitch"] = QPointF(self.gyro.x() + 10, self.gyro.y() + 6)
+        return a
 
 
-def _body_path() -> QPainterPath:
+def _xbox_body() -> QPainterPath:
     p = QPainterPath(QPointF(455, 245))
     p.cubicTo(520, 232, 680, 232, 745, 245)
     p.cubicTo(800, 252, 835, 280, 850, 330)
@@ -97,6 +119,64 @@ def _body_path() -> QPainterPath:
     p.cubicTo(365, 280, 400, 252, 455, 245)
     p.closeSubpath()
     return p
+
+
+def _ps_body() -> QPainterPath:
+    p = QPainterPath(QPointF(430, 250))
+    p.cubicTo(520, 238, 680, 238, 770, 250)
+    p.cubicTo(850, 255, 880, 300, 895, 380)
+    p.cubicTo(915, 480, 930, 570, 915, 610)
+    p.cubicTo(900, 652, 845, 652, 820, 615)
+    p.cubicTo(790, 575, 760, 522, 720, 508)
+    p.cubicTo(680, 496, 520, 496, 480, 508)
+    p.cubicTo(440, 522, 410, 575, 380, 615)
+    p.cubicTo(355, 652, 300, 652, 285, 610)
+    p.cubicTo(270, 570, 285, 480, 305, 380)
+    p.cubicTo(320, 300, 350, 255, 430, 250)
+    p.closeSubpath()
+    return p
+
+
+XBOX = Layout(
+    family="xbox",
+    lt=QPointF(445, 186), rt=QPointF(755, 186), lb=QPointF(445, 228), rb=QPointF(755, 228),
+    lstick=QPointF(450, 322), rstick=QPointF(668, 418), dpad=QPointF(532, 418), face=QPointF(752, 322),
+    back=QPointF(560, 320), start=QPointF(640, 320), guide=QPointF(600, 272), misc1=QPointF(600, 356),
+    paddles={"paddle1": QPointF(822, 565), "paddle3": QPointF(792, 612),
+             "paddle2": QPointF(378, 565), "paddle4": QPointF(408, 612)},
+    left=["lefttrigger", "leftshoulder", "lefty", "leftx", "leftstick", "back", "misc1",
+          "dpup", "dpleft", "dpright", "dpdown", "paddle2", "paddle4"],
+    right=["righttrigger", "rightshoulder", "guide", "y", "start", "x", "b", "a",
+           "righty", "rightx", "rightstick", "paddle1", "paddle3"],
+    body=_xbox_body(),
+)
+
+PLAYSTATION = Layout(
+    family="playstation",
+    lt=QPointF(445, 186), rt=QPointF(755, 186), lb=QPointF(445, 228), rb=QPointF(755, 228),
+    lstick=QPointF(522, 432), rstick=QPointF(678, 432), dpad=QPointF(420, 335), face=QPointF(780, 335),
+    back=QPointF(498, 270), start=QPointF(702, 270), guide=QPointF(600, 446), misc1=QPointF(600, 480),
+    paddles={"paddle1": QPointF(842, 575), "paddle2": QPointF(358, 575),
+             "paddle3": QPointF(722, 488), "paddle4": QPointF(478, 488)},
+    left=["lefttrigger", "leftshoulder", "back", "dpup", "dpleft", "dpright", "dpdown",
+          "touchx", "touchy", "lefty", "leftx", "leftstick", "misc1", "paddle2", "paddle4"],
+    right=["righttrigger", "rightshoulder", "start", "y", "x", "b", "a", "touchpad",
+           "gyroyaw", "gyropitch", "guide", "righty", "rightx", "rightstick", "paddle1", "paddle3"],
+    body=_ps_body(),
+    touchpad=QRectF(522, 250, 156, 82),
+    gyro=QPointF(600, 380),
+)
+LAYOUTS = {"xbox": XBOX, "playstation": PLAYSTATION}
+# Inputs only drawn when the controller has them (or, for PlayStation, by default).
+OPTIONAL = set(PADDLE_IDS) | {"touchpad"} | set(TOUCH_IDS) | set(GYRO_IDS)
+PS_DEFAULT_EXTRAS = {"touchpad"} | set(TOUCH_IDS) | set(GYRO_IDS)
+
+
+@dataclass
+class LabelSlot:
+    input_id: str
+    rect: QRectF
+    left: bool
 
 
 class ControllerView(QWidget):
@@ -117,12 +197,11 @@ class ControllerView(QWidget):
         self.layer_live = False  # True: the layer comes from modifiers held on the controller
         self._sigs: dict = {}
         self.seen_ever: set[str] = set()
+        self.layout = XBOX
+        self.extras: set[str] = set()  # optional inputs the controller has
         self.slots: list[LabelSlot] = []
-        for i, iid in enumerate(LEFT_ORDER):
-            self.slots.append(LabelSlot(iid, QRectF(LEFT_X, TOP_Y + i * STEP_Y, LABEL_W, LABEL_H), True))
-        for i, iid in enumerate(RIGHT_ORDER):
-            self.slots.append(LabelSlot(iid, QRectF(RIGHT_X, TOP_Y + i * STEP_Y, LABEL_W, LABEL_H), False))
-        self._body = _body_path()
+        self.H = BASE_H
+        self.cy = 0.0  # vertical offset of the controller drawing inside the view
         self._f_title = QFont()
         self._f_title.setPixelSize(14)
         self._f_title.setBold(True)
@@ -131,11 +210,40 @@ class ControllerView(QWidget):
         self._f_part = QFont()
         self._f_part.setPixelSize(13)
         self._f_part.setBold(True)
+        self._rebuild_slots()
 
     # ---------------------------------------------------------------- data
     def set_profile(self, profile: Profile) -> None:
         self.profile = profile
         self.update()
+
+    def set_family(self, family: str, extras: set[str] | None = None) -> None:
+        """Switch the drawing to a controller family; `extras` = optional inputs it has."""
+        layout = LAYOUTS.get(family, XBOX)
+        if extras is None:
+            extras = set(PS_DEFAULT_EXTRAS) if layout is PLAYSTATION else set()
+        extras = set(extras) & OPTIONAL
+        if layout is self.layout and extras == self.extras:
+            return
+        self.layout, self.extras = layout, extras
+        self._rebuild_slots()
+        self.update()
+
+    def visible_inputs(self) -> list[str]:
+        return [s.input_id for s in self.slots]
+
+    def _rebuild_slots(self) -> None:
+        keep = lambda ids: [i for i in ids if i not in OPTIONAL or i in self.extras]
+        left, right = keep(self.layout.left), keep(self.layout.right)
+        rows = max(len(left), len(right))
+        step = 62.0 if rows <= 11 else 58.0
+        label_h = step - 10.0
+        self.H = max(BASE_H, TOP_Y * 2 + rows * step - 10.0)
+        self.cy = (self.H - BASE_H) / 2
+        self.slots = []
+        for col, ids, x in ((True, left, LEFT_X), (False, right, RIGHT_X)):
+            for i, iid in enumerate(ids):
+                self.slots.append(LabelSlot(iid, QRectF(x, TOP_Y + i * step, LABEL_W, label_h), col))
 
     def set_state(self, snap: dict, axis_values: dict[str, float], axis_raw_out: dict[str, int]) -> None:
         self.snap = snap
@@ -145,9 +253,9 @@ class ControllerView(QWidget):
 
     # ---------------------------------------------------------------- geometry
     def _transform(self):
-        s = min(self.width() / W, self.height() / H)
+        s = min(self.width() / W, self.height() / self.H)
         ox = (self.width() - W * s) / 2
-        oy = (self.height() - H * s) / 2
+        oy = (self.height() - self.H * s) / 2
         return s, ox, oy
 
     def _to_logical(self, pt) -> QPointF:
@@ -169,22 +277,16 @@ class ControllerView(QWidget):
             if slot.rect.contains(p):
                 return slot.input_id
         # click directly on a part of the diagram
+        p = QPointF(p.x(), p.y() - self.cy)
+        visible = set(self.visible_inputs())
         best, best_d = None, 22.0 ** 2
-        for iid, a in self._part_centers().items():
+        for iid, a in self.layout.centers().items():
             d = (a.x() - p.x()) ** 2 + (a.y() - p.y()) ** 2
-            if d < best_d:
+            if iid in visible and d < best_d:
                 best, best_d = iid, d
+        if best is None and self.layout.touchpad is not None and self.layout.touchpad.contains(p):
+            best = "touchpad" if "touchpad" in visible else None
         return best
-
-    def _part_centers(self) -> dict[str, QPointF]:
-        c = dict(FACE_POS)
-        c.update(DPAD_POS)
-        c.update({
-            "lefttrigger": LT_C, "righttrigger": RT_C, "leftshoulder": LB_C, "rightshoulder": RB_C,
-            "back": VIEW_C, "start": MENU_C, "guide": GUIDE_C, "misc1": SHARE_C,
-            "leftstick": LSTICK, "rightstick": RSTICK,
-        })
-        return c
 
     # ---------------------------------------------------------------- mouse
     def mouseMoveEvent(self, e):
@@ -208,9 +310,13 @@ class ControllerView(QWidget):
     def _active(self, iid: str) -> bool:
         if iid in self.snap.get("buttons", {}):
             return bool(self.snap["buttons"].get(iid))
+        if iid in TOUCH_IDS:
+            return bool(self.snap.get("touch_down"))
         v = self.snap.get("axes", {}).get(iid, 0.0)
         m = self.profile.axes.get(iid) if self.profile else None
         dz = m.deadzone if m else 0.08
+        if iid in GYRO_IDS:
+            return bool(self.snap.get("gyro")) and abs(v) > max(dz, 0.02)
         return abs(v) > dz
 
     def _bmap(self, iid: str) -> ButtonMapping | None:
@@ -225,7 +331,7 @@ class ControllerView(QWidget):
         return bool(m and m.enabled and m.action == "modifier")
 
     def _undetected(self, iid: str) -> bool:
-        return iid in UNRELIABLE_INPUTS and iid not in self.seen_ever
+        return iid in unreliable_inputs(self.layout.family) and iid not in self.seen_ever
 
     def paintEvent(self, _):
         if not self.profile:
@@ -239,21 +345,25 @@ class ControllerView(QWidget):
 
         self._sigs = self.profile.used_signatures()
         self._draw_layer_banner(p)
+        p.save()
+        p.translate(0, self.cy)
         self._draw_body(p)
         self._draw_parts(p)
+        p.restore()
         self._draw_leaders(p)
         for slot in self.slots:
             self._draw_label(p, slot)
+        msg_rect = QRectF(300, self.cy + 660, 600, 40)
         if self.learn:
             p.setPen(QColor(theme.WARN))
             p.setFont(self._f_title)
-            p.drawText(QRectF(300, 660, 600, 40), Qt.AlignCenter,
+            p.drawText(msg_rect, Qt.AlignCenter,
                        tr("Learn: press a button or move a stick/trigger on the controller…",
                           "MIDI Learn: натисни бутон или мръдни стик/тригер на контролера…"))
         elif not self.snap.get("connected"):
             p.setPen(QColor(theme.MUTED))
             p.setFont(self._f_title)
-            p.drawText(QRectF(300, 660, 600, 40), Qt.AlignCenter,
+            p.drawText(msg_rect, Qt.AlignCenter,
                        tr("Controller not connected. Turn it on or plug it in via USB.",
                           "Контролерът не е свързан. Включи го или го свържи по USB."))
         p.end()
@@ -277,8 +387,14 @@ class ControllerView(QWidget):
         p.drawText(r, Qt.AlignCenter, txt)
 
     def _draw_body(self, p: QPainter):
+        L = self.layout
+        visible = set(self.visible_inputs())
+        # back paddles first: they sit under the grips
+        for iid, c in L.paddles.items():
+            if iid in visible:
+                self._part(p, iid, QRectF(c.x() - 20, c.y() - 9, 40, 18), radius=9)
         # triggers and bumpers on top (under the body)
-        for iid, c in (("lefttrigger", LT_C), ("righttrigger", RT_C)):
+        for iid, c in (("lefttrigger", L.lt), ("righttrigger", L.rt)):
             r = QRectF(c.x() - 46, c.y() - 18, 92, 36)
             p.setPen(QPen(QColor(theme.PART_EDGE), 1.5))
             p.setBrush(QColor(theme.PART))
@@ -289,14 +405,14 @@ class ControllerView(QWidget):
                 p.setPen(Qt.NoPen)
                 p.setBrush(QColor(theme.ACCENT))
                 p.drawRoundedRect(fill, 8, 8)
-            self._part_text(p, r, "LT" if iid == "lefttrigger" else "RT", self._sel(iid))
-        for iid, c in (("leftshoulder", LB_C), ("rightshoulder", RB_C)):
+            self._part_text(p, r, INPUT_LABELS[iid], self._sel(iid))
+        for iid, c in (("leftshoulder", L.lb), ("rightshoulder", L.rb)):
             r = QRectF(c.x() - 62, c.y() - 11, 124, 22)
             self._part(p, iid, r, radius=10)
-            self._part_text(p, r, "LB" if iid == "leftshoulder" else "RB", self._sel(iid))
+            self._part_text(p, r, INPUT_LABELS[iid], self._sel(iid))
         p.setPen(QPen(QColor(theme.BODY_EDGE), 2))
         p.setBrush(QColor(theme.BODY_FILL))
-        p.drawPath(self._body)
+        p.drawPath(L.body)
 
     def _sel(self, iid) -> bool:
         return iid in (self.hover, self.selected)
@@ -323,10 +439,13 @@ class ControllerView(QWidget):
         p.drawText(rect, Qt.AlignCenter, text)
 
     def _draw_parts(self, p: QPainter):
+        L = self.layout
         axes = self.snap.get("axes", {})
+        if L.touchpad is not None:
+            self._draw_touchpad(p, L.touchpad)
         # sticks
-        for press_id, xid, yid, c in (("leftstick", "leftx", "lefty", LSTICK),
-                                      ("rightstick", "rightx", "righty", RSTICK)):
+        for press_id, xid, yid, c in (("leftstick", "leftx", "lefty", L.lstick),
+                                      ("rightstick", "rightx", "righty", L.rstick)):
             sel = any(self._sel(i) for i in (press_id, xid, yid))
             p.setPen(QPen(QColor(theme.ACCENT if sel else theme.PART_EDGE), 2 if sel else 1.5))
             p.setBrush(QColor("#1d2025"))
@@ -348,42 +467,113 @@ class ControllerView(QWidget):
             p.drawEllipse(pos, 5, 5)
         # D-pad
         arm = 19.0
+        d = L.dpad
         p.setPen(QPen(QColor(theme.PART_EDGE), 1.5))
         p.setBrush(QColor(theme.PART))
         cross = QPainterPath()
-        cross.addRoundedRect(QRectF(DPAD.x() - arm / 2, DPAD.y() - 34, arm, 68), 4, 4)
-        cross.addRoundedRect(QRectF(DPAD.x() - 34, DPAD.y() - arm / 2, 68, arm), 4, 4)
+        cross.addRoundedRect(QRectF(d.x() - arm / 2, d.y() - 34, arm, 68), 4, 4)
+        cross.addRoundedRect(QRectF(d.x() - 34, d.y() - arm / 2, 68, arm), 4, 4)
         p.drawPath(cross.simplified())
-        for iid, c in DPAD_POS.items():
+        for iid, c in L.dpad_pos.items():
             r = QRectF(c.x() - arm / 2 + 1, c.y() - arm / 2 + 1, arm - 2, arm - 2)
-            if self._active(iid) or self._sel(iid):
-                p.setPen(Qt.NoPen if not self._sel(iid) else QPen(QColor(theme.ACCENT), 2))
+            if self._active(iid) or self._sel(iid) or self._is_modifier(iid):
+                pen_col = theme.ACCENT if self._sel(iid) else theme.MOD
+                p.setPen(QPen(QColor(pen_col), 2) if (self._sel(iid) or self._is_modifier(iid)) else Qt.NoPen)
                 p.setBrush(QColor(theme.ACCENT) if self._active(iid) else Qt.NoBrush)
                 p.drawRoundedRect(r, 3, 3)
-        # ABXY
-        for iid, c in FACE_POS.items():
-            self._part(p, iid, QRectF(c.x() - FACE_R, c.y() - FACE_R, FACE_R * 2, FACE_R * 2), ellipse=True)
-            col = theme.BG if self._active(iid) else theme.FACE_COLORS[iid]
-            self._part_text(p, QRectF(c.x() - FACE_R, c.y() - FACE_R, FACE_R * 2, FACE_R * 2),
-                            iid.upper(), True, color=col)
-        # View / Menu / Share / Xbox
-        for iid, c, r in (("back", VIEW_C, 10), ("start", MENU_C, 10), ("misc1", SHARE_C, 9)):
-            self._part(p, iid, QRectF(c.x() - r, c.y() - r, r * 2, r * 2), ellipse=True)
-        self._part(p, "guide", QRectF(GUIDE_C.x() - 18, GUIDE_C.y() - 18, 36, 36), ellipse=True)
-        # small glyphs
-        p.setPen(QPen(QColor(theme.MUTED), 1.3))
+        # face buttons
+        for iid, c in L.face_pos.items():
+            rect = QRectF(c.x() - FACE_R, c.y() - FACE_R, FACE_R * 2, FACE_R * 2)
+            self._part(p, iid, rect, ellipse=True)
+            if L is PLAYSTATION:
+                self._ps_symbol(p, iid, c, theme.BG if self._active(iid) else PS_FACE_COLORS[iid])
+            else:
+                col = theme.BG if self._active(iid) else theme.FACE_COLORS[iid]
+                self._part_text(p, rect, iid.upper(), True, color=col)
+        # small buttons
+        if L is PLAYSTATION:
+            for iid, c in (("back", L.back), ("start", L.start)):
+                self._part(p, iid, QRectF(c.x() - 7, c.y() - 12, 14, 24), radius=7)
+            self._part(p, "guide", QRectF(L.guide.x() - 14, L.guide.y() - 14, 28, 28), ellipse=True)
+            self._part(p, "misc1", QRectF(L.misc1.x() - 13, L.misc1.y() - 5, 26, 10), radius=5)
+            if L.gyro is not None and set(GYRO_IDS) & set(self.visible_inputs()):
+                self._draw_gyro_icon(p, L.gyro)
+        else:
+            for iid, c, r in (("back", L.back, 10), ("start", L.start, 10), ("misc1", L.misc1, 9)):
+                self._part(p, iid, QRectF(c.x() - r, c.y() - r, r * 2, r * 2), ellipse=True)
+            self._part(p, "guide", QRectF(L.guide.x() - 18, L.guide.y() - 18, 36, 36), ellipse=True)
+            # small glyphs
+            g = L.guide
+            p.setPen(QPen(QColor(theme.MUTED), 1.3))
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(QRectF(L.back.x() - 5, L.back.y() - 4, 6, 5))
+            p.drawRect(QRectF(L.back.x() - 1, L.back.y() - 1, 6, 5))
+            for dy in (-3, 0, 3):
+                p.drawLine(QPointF(L.start.x() - 4, L.start.y() + dy), QPointF(L.start.x() + 4, L.start.y() + dy))
+            p.drawLine(QPointF(g.x() - 7, g.y() - 7), QPointF(g.x() + 7, g.y() + 7))
+            p.drawLine(QPointF(g.x() + 7, g.y() - 7), QPointF(g.x() - 7, g.y() + 7))
+
+    def _ps_symbol(self, p: QPainter, iid: str, c: QPointF, color: str):
+        p.setPen(QPen(QColor(color), 2.2))
         p.setBrush(Qt.NoBrush)
-        p.drawRect(QRectF(VIEW_C.x() - 5, VIEW_C.y() - 4, 6, 5))
-        p.drawRect(QRectF(VIEW_C.x() - 1, VIEW_C.y() - 1, 6, 5))
-        for dy in (-3, 0, 3):
-            p.drawLine(QPointF(MENU_C.x() - 4, MENU_C.y() + dy), QPointF(MENU_C.x() + 4, MENU_C.y() + dy))
-        p.drawLine(QPointF(GUIDE_C.x() - 7, GUIDE_C.y() - 7), QPointF(GUIDE_C.x() + 7, GUIDE_C.y() + 7))
-        p.drawLine(QPointF(GUIDE_C.x() + 7, GUIDE_C.y() - 7), QPointF(GUIDE_C.x() - 7, GUIDE_C.y() + 7))
+        r = 7.0
+        if iid == "a":  # cross
+            p.drawLine(QPointF(c.x() - r, c.y() - r), QPointF(c.x() + r, c.y() + r))
+            p.drawLine(QPointF(c.x() + r, c.y() - r), QPointF(c.x() - r, c.y() + r))
+        elif iid == "b":  # circle
+            p.drawEllipse(c, r, r)
+        elif iid == "x":  # square
+            p.drawRect(QRectF(c.x() - r + 1, c.y() - r + 1, 2 * r - 2, 2 * r - 2))
+        else:  # triangle
+            path = QPainterPath(QPointF(c.x(), c.y() - r))
+            path.lineTo(c.x() + r, c.y() + r * 0.7)
+            path.lineTo(c.x() - r, c.y() + r * 0.7)
+            path.closeSubpath()
+            p.drawPath(path)
+
+    def _draw_touchpad(self, p: QPainter, t: QRectF):
+        visible = set(self.visible_inputs())
+        if not (visible & ({"touchpad"} | set(TOUCH_IDS))):
+            return
+        # light bar: the colour the controller shows for the current layer
+        led = self.snap.get("led")
+        if led:
+            p.setPen(QPen(QColor(*led), 4, Qt.SolidLine, Qt.RoundCap))
+            p.drawLine(QPointF(t.left() - 6, t.top() + 10), QPointF(t.left() - 6, t.bottom() - 10))
+            p.drawLine(QPointF(t.right() + 6, t.top() + 10), QPointF(t.right() + 6, t.bottom() - 10))
+        pressed = self._active("touchpad")
+        sel = self._sel("touchpad") or any(self._sel(i) for i in TOUCH_IDS)
+        p.setPen(QPen(QColor(theme.ACCENT if sel else theme.PART_EDGE), 2 if sel else 1.5))
+        p.setBrush(QColor(theme.ACCENT_DIM if pressed else theme.PART))
+        p.drawRoundedRect(t, 10, 10)
+        if self.snap.get("touch_down"):
+            ax = self.snap.get("axes", {})
+            pos = QPointF(t.left() + ax.get("touchx", 0.5) * t.width(),
+                          t.bottom() - ax.get("touchy", 0.5) * t.height())
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(theme.ACCENT))
+            p.drawEllipse(pos, 7, 7)
+
+    def _draw_gyro_icon(self, p: QPainter, c: QPointF):
+        on = bool(self.snap.get("gyro"))
+        sel = any(self._sel(i) for i in GYRO_IDS)
+        col = QColor(theme.ACCENT if (on or sel) else theme.MUTED)
+        p.setPen(QPen(col, 1.6))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(c, 13, 6)
+        p.drawEllipse(c, 6, 13)
+        p.setPen(Qt.NoPen)
+        p.setBrush(col)
+        p.drawEllipse(c, 2.5, 2.5)
 
     def _draw_leaders(self, p: QPainter):
+        anchors = self.layout.anchors()
         for slot in self.slots:
             iid = slot.input_id
-            a = ANCHORS[iid]
+            a = anchors.get(iid)
+            if a is None:
+                continue
+            a = QPointF(a.x(), a.y() + self.cy)
             r = slot.rect
             start = QPointF(r.right(), r.center().y()) if slot.left else QPointF(r.left(), r.center().y())
             elbow = QPointF(start.x() + (18 if slot.left else -18), start.y())
@@ -427,7 +617,7 @@ class ControllerView(QWidget):
             title += f" · {m.label}"
         p.setFont(self._f_title)
         p.setPen(QColor(theme.MUTED if dim else theme.TEXT))
-        trect = QRectF(r.x() + 10, r.y() + 5, r.width() - 20, 20)
+        trect = QRectF(r.x() + 10, r.y() + 4, r.width() - 20, 20)
         p.drawText(trect, Qt.AlignLeft | Qt.AlignVCenter, title)
 
         # right side of the first row: value / status
@@ -450,10 +640,12 @@ class ControllerView(QWidget):
             on = active or (toggled and m.mode == "toggle")
             p.setPen(Qt.NoPen)
             p.setBrush(QColor((theme.MOD if is_mod else theme.ACCENT) if on else theme.BORDER))
-            p.drawEllipse(QPointF(r.right() - 16, r.y() + 15), 5, 5)
+            p.drawEllipse(QPointF(r.right() - 16, r.y() + 14), 5, 5)
 
         if is_axis:
             desc = describe_axis(m) + (tr(" · shared", " · общ") if self.layer else "")
+            if iid in GYRO_IDS and m.enabled:
+                desc += tr(" · needs Gyro button", " · с бутон Жиро")
         elif held_mod:
             desc = tr("Modifier of this layer", "Модификатор на този слой")
         elif inherited:
@@ -463,7 +655,7 @@ class ControllerView(QWidget):
         else:
             desc = describe_button(m)
         p.setPen(QColor(theme.MUTED if dim else "#b8c0ca"))
-        p.drawText(QRectF(r.x() + 10, r.y() + 25, r.width() - 20, 18), Qt.AlignLeft | Qt.AlignVCenter,
+        p.drawText(QRectF(r.x() + 10, r.y() + 23, r.width() - 20, 18), Qt.AlignLeft | Qt.AlignVCenter,
                    p.fontMetrics().elidedText(desc, Qt.ElideRight, int(r.width() - 20)))
 
         if is_axis and m.enabled:
@@ -473,7 +665,7 @@ class ControllerView(QWidget):
             p.setBrush(QColor(theme.BORDER))
             p.drawRoundedRect(bar, 1.5, 1.5)
             p.setBrush(QColor(theme.ACCENT))
-            if m.mode == "rate" or iid not in TRIGGER_IDS:
+            if m.mode != "absolute" or iid not in TRIGGER_IDS:
                 # position marker (center = 64)
                 x = bar.x() + bar.width() * v
                 p.drawRoundedRect(QRectF(x - 3, bar.y() - 2, 6, 7), 2, 2)

@@ -12,12 +12,14 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QHBoxLayout, QInputDialo
 
 from engine import Engine
 from input_reader import ReaderProcess
-from mapping import (AXIS_IDS, BUTTON_IDS, DEFAULT_PROFILE_NAME, INPUT_LABELS, UNRELIABLE_INPUTS,
+import mapping
+from mapping import (AXIS_IDS, BUTTON_IDS, DEFAULT_PROFILE_NAME, GYRO_IDS, INPUT_LABELS, PADDLE_IDS,
+                     TOUCH_IDS, UNRELIABLE_INPUTS, unreliable_inputs,
                      ProfileStore, default_profile, layer_label, layer_mods)
 from i18n import tr
 from midi_out import MidiOut
 from ui import theme
-from ui.controller_view import LEFT_ORDER, ControllerView
+from ui.controller_view import ControllerView
 from ui.panels import MonitorPanel, SettingsPanel, TestPanel
 from ui.popover import MappingPopover
 
@@ -49,6 +51,7 @@ class MainWindow(QMainWindow):
         self._live_layer = ""
 
         self._build_toolbar()
+        self._info_applied: dict | None = None
         self.view = ControllerView()
         self.view.set_profile(self.profile)
         self.view.seen_ever = set(self.engine.seen)
@@ -80,6 +83,7 @@ class MainWindow(QMainWindow):
 
         self._build_statusbar()
         self._init_settings_panel()
+        self._apply_family()
         self._reload_profiles()
         self._refresh_layers()
 
@@ -165,6 +169,43 @@ class MainWindow(QMainWindow):
         sp.resendRequested.connect(self.engine.resend_rate_values)
         sp.language.setCurrentIndex(max(0, sp.language.findData(st.get("language", "auto"))))
         sp.languageChosen.connect(self._choose_language)
+        sp.led.blockSignals(True)
+        sp.led.setChecked(self.profile.options.led_layers)
+        sp.led.blockSignals(False)
+        sp.view_family.setCurrentIndex(max(0, sp.view_family.findData(st.get("view_family", "auto"))))
+        sp.viewChosen.connect(self._choose_view)
+
+    # ---------------------------------------------------------------- controller family
+    def _choose_view(self, code: str):
+        self.store.settings["view_family"] = code
+        self.store.save_settings()
+        self._apply_family()
+
+    def _apply_family(self):
+        """Labels, diagram and test sliders for Xbox or PlayStation."""
+        st = self.store.settings
+        detected = st.get("family", "xbox")
+        fam = st.get("view_family", "auto")
+        fam = detected if fam not in mapping.FAMILIES else fam
+        mapping.set_family(fam)
+        extras = set(st.get("extras", [])) if fam == detected and st.get("extras") is not None else None
+        self.view.set_family(fam, extras)
+        visible = self.view.visible_inputs()
+        self.test.set_visible([a for a in AXIS_IDS if a in visible])
+        self._refresh_layers()
+
+    def _controller_info(self, info: dict):
+        """A controller connected: remember its family and optional inputs."""
+        extras = [b for b in info.get("has", []) if b == "touchpad" or b in PADDLE_IDS]
+        if info.get("touchpad"):
+            extras += list(TOUCH_IDS) + ["touchpad"]
+        if info.get("gyro"):
+            extras += list(GYRO_IDS)
+        st = self.store.settings
+        st["family"] = info.get("family", "xbox")
+        st["extras"] = sorted(set(extras))
+        self.store.save_settings()
+        self._apply_family()
 
     def _choose_language(self, code: str):
         self.store.settings["language"] = code
@@ -179,6 +220,8 @@ class MainWindow(QMainWindow):
             self.profile.options.fine_factor = sp.fine.value()
             self.profile.options.max_rate_hz = sp.rate.value()
             self.profile.options.center_time = sp.glide.value()
+            self.profile.options.led_layers = sp.led.isChecked()
+            self.engine._led_layer = None  # repaint the light bar
         self.store.settings["persist_rate_values"] = sp.persist.isChecked()
         self.store.settings["resend_on_start"] = sp.resend.isChecked()
         sp.resend.setEnabled(sp.persist.isChecked())
@@ -270,9 +313,10 @@ class MainWindow(QMainWindow):
         key = self.edit_layer
         mods = layer_mods(key)
         filled = []
+        visible = set(self.view.visible_inputs())
         with self.engine.lock:
             for b in BUTTON_IDS:
-                if b in mods or (b in UNRELIABLE_INPUTS and b not in self.engine.seen):
+                if b in mods or b not in visible or (b in unreliable_inputs() and b not in self.engine.seen):
                     continue
                 e = self.profile.effective_map(key, b)
                 if e is not None and e.enabled:
@@ -336,7 +380,7 @@ class MainWindow(QMainWindow):
         pop = MappingPopover(self, input_id, m, self._mapping_changed, extra)
         pop.destroyed.connect(lambda *_, p=pop: self._popover_closed(p))
         self._popover = pop
-        pop.show_near(anchor, prefer_left=input_id in LEFT_ORDER)
+        pop.show_near(anchor, prefer_left=any(s.left for s in self.view.slots if s.input_id == input_id))
 
     def _options_changed_in_popover(self):
         g = self.settings_panel.glide
@@ -389,6 +433,9 @@ class MainWindow(QMainWindow):
             w.blockSignals(True)
             w.setValue(v)
             w.blockSignals(False)
+        sp.led.blockSignals(True)
+        sp.led.setChecked(profile.options.led_layers)
+        sp.led.blockSignals(False)
         self._reload_profiles()
 
     def switch_profile(self, name: str):
@@ -468,6 +515,9 @@ class MainWindow(QMainWindow):
         with eng.lock:
             values = {a: eng.axis_value_01(a) for a in AXIS_IDS}
         self.view.learn = snap["learn"]
+        if snap["connected"] and snap["info"] and snap["info"] != self._info_applied:
+            self._info_applied = snap["info"]
+            self._controller_info(snap["info"])
         newly_seen = (snap["seen"] & set(UNRELIABLE_INPUTS)) - self.view.seen_ever
         if newly_seen:
             self.view.seen_ever |= newly_seen
@@ -530,8 +580,12 @@ class MainWindow(QMainWindow):
             self.st_bg.setText(f"<span style='color:{theme.MUTED}'>●</span> " +
                                tr("Background mode: not verified yet (switch to Lightkey and move a stick)",
                                   "Фонов режим: още не е проверен (премини към Lightkey и мръдни стик)"))
-        self.st_fine.setText(tr("FINE ×{:.2f}", "ФИНО ×{:.2f}").format(self.profile.options.fine_factor)
-                             if snap["fine"] else "")
+        flags = []
+        if snap["gyro"]:
+            flags.append(tr("GYRO", "ЖИРО"))
+        if snap["fine"]:
+            flags.append(tr("FINE ×{:.2f}", "ФИНО ×{:.2f}").format(self.profile.options.fine_factor))
+        self.st_fine.setText("  ·  ".join(flags))
 
     def _save_rate_values(self):
         with self.engine.lock:

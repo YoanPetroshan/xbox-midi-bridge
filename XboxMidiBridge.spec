@@ -25,8 +25,8 @@ app = BUNDLE(
     bundle_identifier="com.yoan.xboxmidibridge",
     info_plist={
         "CFBundleDisplayName": "Xbox MIDI Bridge",
-        "CFBundleShortVersionString": "1.1.0",
-        "CFBundleVersion": "1.1.0",
+        "CFBundleShortVersionString": "1.2.0",
+        "CFBundleVersion": "1.2.0",
         "NSHighResolutionCapable": True,
         "LSMinimumSystemVersion": "15.0",
         "LSApplicationCategoryType": "public.app-category.music",

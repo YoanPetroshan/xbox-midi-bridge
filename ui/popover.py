@@ -10,7 +10,8 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout
                                QVBoxLayout, QWidget)
 
 from i18n import tr
-from mapping import INPUT_LABELS, layer_label, TRIGGER_IDS, UNRELIABLE_INPUTS, AxisMapping, ButtonMapping
+from mapping import (GYRO_IDS, INPUT_LABELS, STICK_IDS, TOUCH_IDS, TRIGGER_IDS, AxisMapping, ButtonMapping,
+                     layer_label, unreliable_inputs)
 
 NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
@@ -68,7 +69,7 @@ class MappingPopover(QFrame):
                              "Включи „Активен“ и задай друго, за да го отмениш в този слой."))
             note.setStyleSheet("color: #b48ef0;")
             lay.addWidget(note)
-        if input_id in UNRELIABLE_INPUTS and not self.extra.get("seen"):
+        if input_id in unreliable_inputs() and not self.extra.get("seen"):
             warn = QLabel(tr("Not detected on this Mac. Over Bluetooth macOS may\n"
                              "intercept this button. Don't use it for important functions.",
                              "Не е открит на този Mac. По Bluetooth macOS може да\n"
@@ -94,7 +95,7 @@ class MappingPopover(QFrame):
         self._load()
         self._loading = False
         self._refresh_visibility()
-        self.setMinimumWidth(330)
+        self.setMinimumWidth(370)
 
     # ---------------------------------------------------------------- button
     def _build_button(self):
@@ -103,7 +104,9 @@ class MappingPopover(QFrame):
                               ("center_left", tr("Center left stick (Pan/Tilt 1)", "Център ляв стик (Pan/Tilt 1)")),
                               ("center_right", tr("Center right stick (Pan/Tilt 2)", "Център десен стик (Pan/Tilt 2)")),
                               ("center", tr("Center all Pan/Tilt", "Център всички Pan/Tilt")),
-                              ("fine", tr("Fine (while held)", "Фино (докато е натиснат)"))])
+                              ("fine", tr("Fine (while held)", "Фино (докато е натиснат)")),
+                              ("gyro", tr("Gyro (PlayStation): moves with the controller",
+                                          "Жиро (PlayStation): мести с контролера"))])
         self.glide = QDoubleSpinBox()
         self.glide.setRange(0.0, 10.0)
         self.glide.setSingleStep(0.1)
@@ -166,8 +169,13 @@ class MappingPopover(QFrame):
 
     # ---------------------------------------------------------------- axis
     def _build_axis(self):
-        self.amode = _combo([("rate", tr("Rate (Pan/Tilt)", "Скоростен (Pan/Tilt)")),
-                             ("absolute", tr("Absolute (position)", "Абсолютен (позиция)"))])
+        if self.input_id in TOUCH_IDS:
+            modes = [("relative", tr("Drag (like a trackpad)", "Плъзгане (като тракпад)")),
+                     ("absolute", tr("Absolute (XY pad)", "Абсолютен (XY пад)"))]
+        else:
+            modes = [("rate", tr("Rate (speed)", "Скоростен (скорост)")),
+                     ("absolute", tr("Absolute (position)", "Абсолютен (позиция)"))]
+        self.amode = _combo(modes)
         self.channel = QSpinBox()
         self.channel.setRange(1, 16)
         self.cc = QSpinBox()
@@ -189,15 +197,26 @@ class MappingPopover(QFrame):
         cl.addWidget(self.curve, 1)
         cl.addWidget(QLabel(tr("amount", "сила")))
         cl.addWidget(self.expo)
+        self.curve_row = curve_row
         self.speed = QDoubleSpinBox()
         self.speed.setRange(0.05, 5.0)
         self.speed.setSingleStep(0.05)
         self.speed.setDecimals(2)
-        self.speed.setSuffix(tr(" range/s", " обхв./сек"))
-        self.speed.setToolTip(tr("At full deflection: what fraction of the full range is covered per second.\n"
-                                 "0.50 = end to end in 2 seconds.",
-                                 "При пълно изместване: каква част от целия обхват се изминава за секунда.\n"
-                                 "0.50 = от край до край за 2 секунди."))
+        self.span = QDoubleSpinBox()
+        self.span.setRange(0.05, 1.0)
+        self.span.setSingleStep(0.05)
+        self.span.setDecimals(2)
+        self.span.setPrefix("× ")
+        self.span.setToolTip(tr("Which part of the full range full deflection covers, around the middle.\n"
+                                "1.00 = the whole range; 0.50 = only the middle half, for precise work.",
+                                "Каква част от целия обхват покрива пълното отклонение, около средата.\n"
+                                "1.00 = целият обхват; 0.50 = само средната половина, за прецизна работа."))
+        self.hold = QCheckBox(tr("Hold position when released", "Задръж позицията при пускане"))
+        self.hold.setToolTip(tr(
+            "The stick's spring back to center is ignored: the head stays where you left it.\n"
+            "The stick takes over again when it reaches that position (no jump).",
+            "Връщането на стика от пружината се игнорира: главата остава, където си я оставил.\n"
+            "Стикът я поема отново, когато стигне до тази позиция (без скок)."))
         self.invert = QCheckBox(tr("Invert direction", "Инвертирай посоката"))
         self.form.addRow(tr("Mode", "Режим"), self.amode)
         self.form.addRow(tr("Channel", "Канал"), self.channel)
@@ -205,16 +224,19 @@ class MappingPopover(QFrame):
         self.form.addRow("", self.hires)
         self.form.addRow("Deadzone", self.deadzone)
         self.form.addRow(tr("Curve", "Крива"), curve_row)
-        self.form.addRow(tr("Max speed", "Макс. скорост"), self.speed)
+        self.form.addRow(tr("Sensitivity", "Чувствителност"), self.speed)
+        self.form.addRow(tr("Sensitivity", "Чувствителност"), self.span)
+        self.form.addRow("", self.hold)
         self.form.addRow("", self.invert)
         self.center_btn = QPushButton(tr("Center (64)", "Център (64)"))
         self.center_btn.clicked.connect(lambda: self.extra.get("center_axis", lambda _: None)(self.input_id))
         self.form.addRow("", self.center_btn)
         for w in (self.amode, self.curve):
             w.currentIndexChanged.connect(self._changed)
-        for w in (self.channel, self.cc, self.deadzone, self.expo, self.speed):
+        for w in (self.channel, self.cc, self.deadzone, self.expo, self.speed, self.span):
             w.valueChanged.connect(self._changed)
         self.hires.toggled.connect(self._changed)
+        self.hold.toggled.connect(self._changed)
         self.invert.toggled.connect(self._changed)
 
     # ---------------------------------------------------------------- data
@@ -241,6 +263,8 @@ class MappingPopover(QFrame):
             _set_combo(self.curve, m.curve)
             self.expo.setValue(m.expo)
             self.speed.setValue(m.max_speed)
+            self.span.setValue(m.span)
+            self.hold.setChecked(m.hold)
             self.invert.setChecked(m.invert)
 
     def _changed(self, *_):
@@ -269,6 +293,8 @@ class MappingPopover(QFrame):
             m.curve = self.curve.currentData()
             m.expo = self.expo.value()
             m.max_speed = self.speed.value()
+            m.span = self.span.value()
+            m.hold = self.hold.isChecked()
             m.invert = self.invert.isChecked()
         self._refresh_visibility()
         self.on_change(self.input_id)
@@ -285,6 +311,8 @@ class MappingPopover(QFrame):
             self._show_row(self.glide, m.action.startswith("center"))
             for w in (self.type, self.mode, self.channel, self.num_row, self.value):
                 self._show_row(w, midi)
+            if m.action == "gyro":
+                self._show_row(self.mode, True)  # momentary = while held, toggle = on/off
             if midi:
                 self._show_row(self.mode, m.type != "pc")
                 show_val = m.type == "note" or (m.type == "cc" and m.mode == "value")
@@ -297,9 +325,26 @@ class MappingPopover(QFrame):
                     nl.setText({"note": tr("Note", "Нота"), "cc": "CC №", "pc": tr("Program", "Програма")}[m.type])
                 self.note_lbl.setText(note_name(m.number) if m.type == "note" else "")
         else:
-            rate = m.mode == "rate"
-            self._show_row(self.speed, rate)
-            self._show_row(self.center_btn, rate)
+            a = self.input_id
+            gyro, touch, stick = a in GYRO_IDS, a in TOUCH_IDS, a in STICK_IDS
+            moving = gyro or m.mode in ("rate", "relative")  # sensitivity = speed / drag amount
+            self._show_row(self.amode, not gyro)  # the gyro is always a speed
+            self._show_row(self.speed, moving)
+            self._show_row(self.span, not moving)
+            self._show_row(self.hold, stick and m.mode == "absolute")
+            self._show_row(self.deadzone, not touch)
+            self._show_row(self.curve_row, not touch)
+            self.speed.setSuffix(tr(" range/swipe", " обхв./плъзгане") if m.mode == "relative" and touch
+                                 else tr(" range/s", " обхв./сек"))
+            self.speed.setToolTip(
+                tr("How far one full swipe across the touchpad moves the value (0.50 = half the range).",
+                   "Колко мести стойността едно цяло плъзгане по тъчпада (0.50 = половин обхват).")
+                if touch else
+                tr("At full deflection: what fraction of the full range is covered per second.\n"
+                   "0.50 = end to end in 2 seconds.",
+                   "При пълно изместване: каква част от целия обхват се изминава за секунда.\n"
+                   "0.50 = от край до край за 2 секунди."))
+            self._show_row(self.center_btn, moving or touch or (stick and m.hold))
             self.expo.setEnabled(m.curve == "expo")
             self.hires.setEnabled(m.cc < 32)
             self.hires.setToolTip("" if m.cc < 32 else tr("14-bit is only possible for CC 0–31 (LSB = CC+32).",

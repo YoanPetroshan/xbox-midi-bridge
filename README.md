@@ -2,7 +2,8 @@
 
 **English** · [Български](README.bg.md)
 
-Turn an Xbox Series controller (Bluetooth or USB) into a MIDI controller for
+Turn an Xbox Series or PlayStation (DualSense / DualShock 4) controller, over Bluetooth or USB,
+into a MIDI controller for
 [Lightkey](https://lightkeyapp.com) on macOS. Every button and axis is programmable from a
 graphical interface, and the two sticks drive the Pan/Tilt of moving heads in **rate mode**:
 the stick sets the speed, and a released stick leaves the head where it is.
@@ -22,7 +23,10 @@ the stick sets the speed, and a released stick leaves the head where it is.
 
 - **Virtual MIDI port** “Xbox MIDI Bridge”: Lightkey sees it directly, no IAC Driver needed.
 - **Works in the background** while Lightkey is the frontmost app.
-- **Rate mode for Pan/Tilt** with deadzone, expo curve, max speed and invert. No drift at center.
+- **Rate mode for Pan/Tilt** with deadzone, expo curve, sensitivity and invert. No drift at center.
+- **Absolute mode** where the stick position is the head position, with sensitivity and an optional
+  **hold on release** (the spring back to center is ignored; pick-up without jumps).
+- **PlayStation controllers:** touchpad as an XY pad or trackpad, gyro aiming, light bar shows the layer.
 - **L3 / R3 glide Pan/Tilt back to center** smoothly, with adjustable glide time.
 - **Modifiers and layers** (key combos): LB + X, D-pad ↑ + X and LB + D-pad ↑ + X are separate buttons.
 - **14-bit CC** (MSB on CC n, LSB on CC n+32) for finer movement.
@@ -52,6 +56,8 @@ Settings and profiles live in `~/Library/Application Support/XboxMidiBridge/`
 
 - **Bluetooth:** hold the pair button (top, next to the USB-C port) until the Xbox button
   blinks fast → System Settings → Bluetooth → “Xbox Wireless Controller” → Connect.
+- **PlayStation (DualSense / DualShock 4) over Bluetooth:** hold **PS + Create** (DualShock 4:
+  PS + Share) until the light bar flashes → System Settings → Bluetooth → Connect.
 - **USB:** plug it in with a USB-C cable.
 - If the controller falls asleep, press the Xbox button. The app finds it again without a
   restart and **sends no jumps**: it reads the current position first, then continues.
@@ -90,7 +96,10 @@ Settings and profiles live in `~/Library/Application Support/XboxMidiBridge/`
 | Mode | **Rate**: deflection is speed; **Absolute**: position is the value (stick: center = 64) |
 | Deadzone | area around the center with no reaction (default 0.08), so there is no drift |
 | Curve | Linear or Exponential (amount 0–1: softer around the center for fine moves) |
-| Max speed | at full deflection: fraction of the range per second (0.50 = end to end in 2 s) |
+| Sensitivity (rate, gyro) | at full deflection: fraction of the range per second (0.50 = end to end in 2 s) |
+| Sensitivity (absolute) | fraction of the range full deflection covers, around the middle (0.50 = the middle half, for precise work) |
+| Sensitivity (touch drag) | how far one full swipe moves the value (0.50 = half the range) |
+| Hold position when released | absolute sticks only: the spring back to center is ignored, the head stays put. The stick takes over again when it reaches the kept position, so there is no jump |
 | 14-bit | MSB on CC n + LSB on CC n+32 (16384 steps instead of 128). CC 0–31 only |
 | Invert | reverses the direction |
 
@@ -149,9 +158,48 @@ new **layer** with their own values, so one button gives many commands:
 | Left stick X / Y | CC rate (Pan / Tilt 1) | CC 10 / 11 |
 | Right stick X / Y | CC rate (Pan / Tilt 2) | CC 12 / 13 |
 | LT / RT | CC absolute | CC 20 / 21 |
+| Touchpad click | Note momentary | 52 |
+| Back paddles 1–4 (Elite / Edge) | Note momentary | 53 / 54 / 55 / 56 |
+| Touchpad X / Y | CC drag (Pan / Tilt 1) | CC 10 / 11 |
+| Gyro turn / tilt | CC rate (Pan / Tilt 1), needs a Gyro button | CC 10 / 11 |
 
 Stick up = value increases (Y is flipped relative to SDL). If a head moves the wrong way,
 tick “Invert direction” for that axis.
+
+Axes that send the **same CC** share **one value** (left stick X, touchpad X and gyro turn all
+drive Pan 1): you can switch between them at any time without the head jumping.
+
+## PlayStation controllers (DualSense / DualShock 4)
+
+The app recognises PlayStation controllers and switches the diagram and names automatically.
+Settings → **Diagram** lets you pick Xbox or PlayStation by hand, e.g. to prepare a profile for
+a controller you don't have at hand. Profiles work with both: the buttons are the same SDL inputs.
+
+| Xbox | PlayStation |
+|---|---|
+| A / B / X / Y | ✕ Cross / ○ Circle / □ Square / △ Triangle |
+| LB / RB, LT / RT | L1 / R1, L2 / R2 |
+| View / Menu / Xbox | Create / Options / PS |
+| Share | Mic (mute button) |
+
+![PlayStation layout](docs/screenshot-playstation.png)
+
+**Extras on PlayStation**
+- **Touchpad click** is its own button.
+- **Touchpad surface** (finger 1) as two axes, Touchpad X / Y, in one of two modes:
+  - **Drag (like a trackpad)** (default): moving the finger moves the value; lifting it keeps the
+    value, and putting it down elsewhere does not jump. Great for fine Pan/Tilt adjustments.
+  - **Absolute (XY pad)**: the finger position is the value (with sensitivity); held after lifting.
+- **Gyro** (turn = yaw, tilt = pitch) moves Pan/Tilt like a stick in rate mode, but **only while a
+  button with the “Gyro” function is held** (or toggled on with Mode → Toggle), so the head never
+  moves by accident. Assign it in a button's editor: Function → Gyro. The status bar shows “GYRO”.
+- **Light bar** shows the active layer: blue for the base layer, then a colour per layer (the same
+  colour is drawn next to the touchpad). Settings → “Light bar colour per layer” turns it off.
+- **DualSense Edge** back buttons and Fn buttons (and the Xbox Elite paddles) appear as
+  Paddle 1–4 when the controller reports them.
+
+> PlayStation support is covered by automated tests but has not yet been tried on a real DualSense.
+> If you have one, run `--diag` and please open an issue with the result.
 
 ## Connecting to Lightkey
 

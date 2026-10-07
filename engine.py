@@ -12,8 +12,8 @@ import time
 import mido
 
 from i18n import tr
-from mapping import (AXIS_IDS, BUTTON_IDS, CENTER_TARGETS, TRIGGER_IDS, AxisMapping,
-                     ButtonMapping, Profile, layer_key)
+from mapping import (AXIS_IDS, BUTTON_IDS, CENTER_TARGETS, GYRO_IDS, STICK_IDS, TOUCH_IDS,
+                     TRIGGER_IDS, AxisMapping, ButtonMapping, Profile, layer_key)
 
 TICK_HZ = 250
 SETTLE_S = 0.15  # after connecting: wait for real values before reacting
@@ -22,6 +22,24 @@ LEARN_AXIS_THRESHOLD = 0.6
 # While gliding to center, small stick touches (e.g. while clicking L3) are ignored;
 # only a clear deflection above this threshold cancels the glide.
 GLIDE_CANCEL = 0.5
+
+
+# Modes whose value is kept by the engine (not derived from the input position).
+HELD_MODES = ("rate", "relative")
+# Absolute sticks with "hold": a return to center faster than this (stick units per second)
+# is the spring, not the hand, so the position is kept.
+RELEASE_SPEED = 6.0
+PICKUP = 0.02  # how close the stick must come to the held value to take it over
+
+
+def is_held(a: str, m: AxisMapping) -> bool:
+    """True if the engine keeps this axis' value (rate_values) instead of reading it live."""
+    return (m.mode in HELD_MODES or a in GYRO_IDS or a in TOUCH_IDS
+            or (m.mode == "absolute" and m.hold and a in STICK_IDS))
+
+# Light bar colours: base layer, then each layer in discovery order.
+LAYER_COLORS = [(0, 90, 255), (170, 80, 255), (255, 120, 0), (0, 200, 80), (255, 30, 30),
+                (0, 220, 220), (255, 200, 0), (255, 60, 160), (255, 255, 255)]
 
 
 def smoothstep(p: float) -> float:
@@ -95,6 +113,17 @@ class Engine:
         self._last_send: dict[str, float] = {}
         self.rate_dirty = False
         self.fine_active = False
+        self.gyro_active = False
+        self._gyro_toggle = False
+        self.touch_down = False
+        self._touch_was_down = False
+        self._touch_last: dict[str, float] = {}
+        self._hold_state: dict[str, dict] = {}  # absolute+hold sticks: pick-up state
+        self._sent_cc: dict[tuple, int] = {}  # (channel, cc, hires) → last value sent
+        self.info: dict = {}  # capabilities reported by the reader
+        self.led_color: tuple | None = None
+        self._led_layer: str | None = None
+        self._led_out: tuple | None = None
         self._glides: dict[str, tuple[float, float, float]] = {}  # axis → (start, t0, duration)
 
         # UI helpers
@@ -153,6 +182,10 @@ class Engine:
             return
         for msg in self.reader.poll():
             self.feed(msg, now)
+        with self.lock:
+            led, self._led_out = self._led_out, None
+        if led is not None:
+            self.reader.send(("led",) + led)
 
     reader_prefer: str | None = None
 
@@ -161,9 +194,12 @@ class Engine:
         with self.lock:
             kind = msg[0]
             if kind == "state":
-                _, buttons, axes = msg
+                buttons, axes = msg[1], msg[2]
+                self.touch_down = bool(msg[3]) if len(msg) > 3 else False
                 self.buttons = dict(zip(BUTTON_IDS, buttons))
                 self.axes = dict(zip(AXIS_IDS, axes))
+                if self.touch_down:
+                    self.seen.update(TOUCH_IDS)
                 self.last_input_time = now
                 self.input_count += 1
                 if not self.app_active and self.connected:
@@ -172,12 +208,14 @@ class Engine:
                     if p:
                         self.seen.add(b)
                 for a, v in self.axes.items():
-                    if abs(v) > 0.3:
+                    if abs(v) > 0.3 and a not in TOUCH_IDS:
                         self.seen.add(a)
             elif kind == "connected":
                 self.connected = True
                 self.controller_name = msg[1]
                 self.sdl_mapping = msg[2] if len(msg) > 2 else {}
+                self.info = dict(msg[3]) if len(msg) > 3 and msg[3] else {}
+                self._led_layer = None  # repaint the light bar for the new connection
                 self.error = None
                 self._settle_until = now + SETTLE_S
                 self._baseline = True
@@ -197,6 +235,9 @@ class Engine:
         # Sticks stop (rate values stay); triggers send nothing until reconnect.
         self.axes = {a: 0.0 for a in AXIS_IDS}
         self.fine_active = False
+        self.gyro_active = False
+        self._gyro_toggle = False
+        self.touch_down = self._touch_was_down = False
 
     def _release_all_held(self) -> None:
         """Release all held buttons (using the mapping of the layer they were pressed in)."""
@@ -222,9 +263,10 @@ class Engine:
                 self._baseline = False
                 self._prev = dict(self.buttons)
                 for a, m in self.profile.axes.items():
-                    if m.mode == "absolute":
+                    if not is_held(a, m):
                         self._target[a] = self._compute_absolute(a, m)
                         self._pending.discard(a)
+                self._hold_state.clear()  # held sticks re-pick-up from their kept value
                 return
 
             if self.learn:
@@ -242,40 +284,124 @@ class Engine:
             self._prev = dict(self.buttons)
 
             self.fine_active = False
+            self.gyro_active = self._gyro_toggle
             for b, key in self._held.items():
                 m = self.profile.effective_map(key, b)
                 if m and m.enabled and m.action == "fine":
                     self.fine_active = True
+                if m and m.enabled and m.action == "gyro" and m.mode != "toggle":
+                    self.gyro_active = True
+            self._update_led()
 
             for a in AXIS_IDS:
                 m = self.profile.axes.get(a)
                 if not m or not m.enabled:
                     continue
-                if m.mode == "rate" and a in self._glides:
+                fine = self.profile.options.fine_factor if self.fine_active else 1.0
+                if a in TOUCH_IDS:
+                    target = self._touch_target(a, m, fine)
+                elif a in self._glides:
                     target = quantize(self.rate_values[a], m.hires)
-                elif m.mode == "rate":
+                elif m.mode == "absolute" and m.hold and a in STICK_IDS:
+                    target = self._hold_target(a, m, dt)
+                elif m.mode in HELD_MODES or a in GYRO_IDS:
                     x = self.axes.get(a, 0.0)
-                    if a in TRIGGER_IDS:
+                    if a in GYRO_IDS and not self.gyro_active:
+                        x = 0.0  # the gyro only moves while its button is held / toggled on
+                    elif a in TRIGGER_IDS:
                         x = shape_trigger(x, m)
                     else:
                         x = shape_stick(x, m)
                     if x != 0.0 and dt > 0:
-                        speed = m.max_speed * (self.profile.options.fine_factor if self.fine_active else 1.0)
-                        v = self.rate_values[a] + x * speed * dt
-                        self.rate_values[a] = max(0.0, min(1.0, v))
-                        self.rate_dirty = True
+                        self._move_held(a, x * m.max_speed * fine * dt)
                     target = quantize(self.rate_values[a], m.hires)
                 else:
                     target = self._compute_absolute(a, m)
                 if target != self._target.get(a):
                     self._target[a] = target
                     self._pending.add(a)
+            self._touch_was_down = self.touch_down
             self._flush_pending(now)
+
+    # ------------------------------------------------------------ shared values
+    def _group(self, a: str) -> list[str]:
+        """Held-value axes sending the same CC as `a` (e.g. left stick X, touch X and gyro
+        turn all on CC 10): they share one value, so switching between them never jumps."""
+        m = self.profile.axes.get(a)
+        if not m:
+            return [a]
+        key = (m.channel, m.cc, m.hires)
+        return [b for b, n in self.profile.axes.items()
+                if n.enabled and (b == a or (is_held(b, n) and (n.channel, n.cc, n.hires) == key))]
+
+    def _set_held(self, a: str, v: float) -> None:
+        v = max(0.0, min(1.0, v))
+        for b in self._group(a):
+            self.rate_values[b] = v
+        self.rate_dirty = True
+
+    def _move_held(self, a: str, delta: float) -> None:
+        for b in self._group(a):
+            self._glides.pop(b, None)  # moving by hand cancels a glide to center
+        self._set_held(a, self.rate_values[a] + delta)
+
+    def _hold_target(self, a: str, m: AxisMapping, dt: float) -> int:
+        """Absolute stick that keeps its position when released.
+
+        Following: the head goes where the stick points. A fast return to center is the
+        spring, so the value freezes. Frozen: the stick takes over again only when it
+        reaches (or crosses) the kept value, so there is never a jump.
+        """
+        x = shape_stick(self.axes.get(a, 0.0), m)
+        v = 0.5 + x * 0.5 * m.span
+        st = self._hold_state.setdefault(a, {"held": True, "px": x, "pv": v})
+        if not st["held"]:
+            springing = dt > 0 and abs(x) < abs(st["px"]) and (abs(st["px"]) - abs(x)) / dt > RELEASE_SPEED
+            if x == 0.0 or springing:
+                st["held"] = True
+            else:
+                self._set_held(a, v)
+        else:
+            kept = self.rate_values[a]
+            if x != 0.0 and ((st["pv"] - kept) * (v - kept) <= 0 or abs(v - kept) < PICKUP):
+                st["held"] = False
+                self._set_held(a, v)
+        st["px"], st["pv"] = x, v
+        return quantize(self.rate_values[a], m.hires)
+
+    def _touch_target(self, a: str, m: AxisMapping, fine: float) -> int | None:
+        pos = self.axes.get(a, 0.5)
+        if m.invert:
+            pos = 1.0 - pos
+        if m.mode == "relative":
+            if self.touch_down and self._touch_was_down:
+                self._move_held(a, (pos - self._touch_last.get(a, pos)) * m.max_speed * fine)
+            if self.touch_down:
+                self._touch_last[a] = pos
+            return quantize(self.rate_values[a], m.hires)
+        if self.touch_down:  # absolute: the finger position; held after the finger lifts
+            self._set_held(a, 0.5 + (pos - 0.5) * m.span)
+        return quantize(self.rate_values[a], m.hires)
+
+    # ------------------------------------------------------------ light bar
+    def layer_color(self, key: str) -> tuple[int, int, int]:
+        layers = self.profile.reachable_layers()
+        i = layers.index(key) if key in layers else 0
+        return LAYER_COLORS[i % len(LAYER_COLORS)]
+
+    def _update_led(self) -> None:
+        if not (self.info.get("led") and self.profile.options.led_layers):
+            return
+        key = self.current_layer
+        if key != self._led_layer:
+            self._led_layer = key
+            self.led_color = self.layer_color(key)
+            self._led_out = self.led_color
 
     def _run_glides(self, now: float) -> None:
         for a, (start, t0, dur) in list(self._glides.items()):
             m = self.profile.axes.get(a)
-            if not m or not m.enabled or m.mode != "rate" or (
+            if not m or not m.enabled or not is_held(a, m) or (
                     self.connected and abs(self.axes.get(a, 0.0)) > GLIDE_CANCEL):
                 del self._glides[a]  # the user took over
                 continue
@@ -285,8 +411,7 @@ class Engine:
                 del self._glides[a]
             else:
                 v = start + (0.5 - start) * smoothstep(p)
-            self.rate_values[a] = v
-            self.rate_dirty = True
+            self._set_held(a, v)
             target = quantize(v, m.hires)
             if target != self._target.get(a):
                 self._target[a] = target
@@ -295,9 +420,9 @@ class Engine:
     def _compute_absolute(self, a: str, m: AxisMapping) -> int:
         x = self.axes.get(a, 0.0)
         if a in TRIGGER_IDS:
-            v = shape_trigger(x, m)
+            v = shape_trigger(x, m) * m.span
         else:
-            v = (shape_stick(x, m) + 1.0) / 2.0  # center = 64 / 8192
+            v = 0.5 + shape_stick(x, m) * 0.5 * m.span  # center = 64 / 8192
         return quantize(v, m.hires)
 
     def _flush_pending(self, now: float) -> None:
@@ -319,6 +444,10 @@ class Engine:
             return
         self.outputs[a] = value
         self._last_send[a] = now
+        key = (m.channel, m.cc, m.hires)
+        if self._sent_cc.get(key) == value:
+            return  # another axis on the same CC already sent this value
+        self._sent_cc[key] = value
         ch = m.channel - 1
         if m.hires:
             self.midi.send(mido.Message("control_change", channel=ch, control=m.cc, value=value >> 7))
@@ -357,6 +486,10 @@ class Engine:
             self.center_axes(CENTER_TARGETS[m.action])
             return
         if m.action == "fine":
+            return
+        if m.action == "gyro":
+            if m.mode == "toggle":
+                self._gyro_toggle = not self._gyro_toggle
             return
         ch = m.channel - 1
         if m.type == "pc":
@@ -416,7 +549,10 @@ class Engine:
                 if self._learn_mod and self._learn_mod[0] == b:
                     self._finish_learn(self._learn_mod)
                     return
-        for a in AXIS_IDS:
+        if self.touch_down:
+            self._finish_learn(("touchx", ""))
+            return
+        for a in STICK_IDS + TRIGGER_IDS:  # not the gyro: the pad moves while you press buttons
             if abs(self.axes.get(a, 0.0)) > LEARN_AXIS_THRESHOLD:
                 self._finish_learn((a, ""))
                 return
@@ -441,8 +577,9 @@ class Engine:
                 for a in AXIS_IDS:
                     self.rate_values[a] = max(0.0, min(1.0, float(rate_values.get(a, 0.5))))
             # New axes start from the current position without sending.
+            self._hold_state.clear()
             for a, m in profile.axes.items():
-                if m.mode == "rate":
+                if is_held(a, m):
                     self._target[a] = self.outputs[a] = quantize(self.rate_values[a], m.hires)
                 else:
                     self._target[a] = self._compute_absolute(a, m)
@@ -454,7 +591,8 @@ class Engine:
             if m is None:
                 return
             self._pending.discard(input_id)
-            if m.mode == "rate":
+            self._hold_state.pop(input_id, None)
+            if is_held(input_id, m):
                 self._target[input_id] = self.outputs[input_id] = quantize(self.rate_values[input_id], m.hires)
             else:
                 self._target[input_id] = self._compute_absolute(input_id, m)
@@ -470,12 +608,11 @@ class Engine:
             now = self._last_step if self._last_step is not None else time.perf_counter()
             for a in axes:
                 m = self.profile.axes.get(a)
-                if not m or not m.enabled or m.mode != "rate":
+                if not m or not m.enabled or not is_held(a, m):
                     continue
                 if dur <= 0:
                     self._glides.pop(a, None)
-                    self.rate_values[a] = 0.5
-                    self.rate_dirty = True
+                    self._set_held(a, 0.5)
                     self._force_axis(a, m, quantize(0.5, m.hires))
                 else:
                     self._glides[a] = (self.rate_values[a], now, dur)
@@ -488,22 +625,28 @@ class Engine:
                 return
             v = max(0.0, min(1.0, v))
             self._glides.pop(a, None)
-            if m.mode == "rate":
-                self.rate_values[a] = v
-                self.rate_dirty = True
+            if is_held(a, m):
+                self._set_held(a, v)
             self._force_axis(a, m, quantize(v, m.hires))
 
     def _force_axis(self, a: str, m: AxisMapping, value: int) -> None:
-        if m.mode == "rate":
-            self._target[a] = value
+        """Send now, even if the same value went out before (center, test sliders, resend)."""
+        if is_held(a, m):
+            for b in self._group(a):
+                self._target[b] = self.outputs[b] = value
+                self._pending.discard(b)
         self._pending.discard(a)
         self.outputs.pop(a, None)
+        self._sent_cc.pop((m.channel, m.cc, m.hires), None)
         self._send_axis(a, m, value, self._last_step or time.perf_counter())
 
     def resend_rate_values(self) -> None:
         with self.lock:
+            done = set()
             for a, m in self.profile.axes.items():
-                if m.enabled and m.mode == "rate":
+                key = (m.channel, m.cc, m.hires)
+                if m.enabled and is_held(a, m) and key not in done:
+                    done.add(key)
                     self._force_axis(a, m, quantize(self.rate_values[a], m.hires))
 
     def axis_value_01(self, a: str) -> float:
@@ -513,7 +656,7 @@ class Engine:
             return 0.0
         out = self.outputs.get(a)
         if out is None:
-            return self.rate_values[a] if m.mode == "rate" else 0.0
+            return self.rate_values[a] if is_held(a, m) else 0.0
         return out / (16383 if m.hires else 127)
 
     def snapshot(self) -> dict:
@@ -531,6 +674,10 @@ class Engine:
                 "layer": self.current_layer,
                 "active_mods": list(self.active_mods),
                 "fine": self.fine_active,
+                "gyro": self.gyro_active,
+                "touch_down": self.touch_down,
+                "info": dict(self.info),
+                "led": self.led_color,
                 "gliding": set(self._glides),
                 "learn": self.learn,
                 "learned": self.learned,

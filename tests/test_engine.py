@@ -356,6 +356,206 @@ class LayerTest(unittest.TestCase):
         self.assertNotIn(n, (36, 37, 38, 39, 40, 41, 42, 43, 46, 47, 48, 49, 50, 51, 70, 71, 72))
 
 
+def pad_state(buttons=(), touch=None, **axes):
+    """State message with the touchpad: touch=(x, y) while a finger is down."""
+    msg = state(buttons, **axes)
+    vals = dict(zip(AXIS_IDS, msg[2]))
+    if touch:
+        vals["touchx"], vals["touchy"] = touch
+    return ("state", msg[1], tuple(vals[a] for a in AXIS_IDS), bool(touch))
+
+
+class PlayStationTest(unittest.TestCase):
+    """DualSense extras: touchpad, gyro with its button, light bar, shared CCs."""
+
+    def setUp(self):
+        self.midi = FakeMidi()
+        self.eng = Engine(default_profile(), self.midi)
+        self.t = 0.0
+        info = {"family": "playstation", "touchpad": True, "gyro": True, "led": True}
+        self.eng.feed(("connected", "PS5 Controller", {}, info), self.t)
+        self.eng.feed(pad_state(), self.t)
+        self.run_for(0.3)
+        self.midi.sent.clear()
+
+    def run_for(self, seconds, dt=0.004):
+        end = self.t + seconds
+        while self.t < end:
+            self.t += dt
+            self.eng.step(self.t)
+
+    def test_touch_drag_moves_like_a_trackpad(self):
+        # default: touch X is "drag" on CC 10 with sensitivity 0.5 per full swipe
+        self.eng.feed(pad_state(touch=(0.2, 0.5)), self.t)
+        self.run_for(0.05)
+        self.assertEqual(self.midi.cc(10), [], "putting a finger down is not a move")
+        for i in range(1, 11):
+            self.eng.feed(pad_state(touch=(0.2 + 0.06 * i, 0.5)), self.t)
+            self.run_for(0.02)
+        self.assertAlmostEqual(self.eng.rate_values["touchx"], 0.5 + 0.6 * 0.5, places=2)
+        self.eng.feed(pad_state(), self.t)  # lift
+        self.run_for(0.1)
+        self.eng.feed(pad_state(touch=(0.9, 0.5)), self.t)  # new touch elsewhere: no jump
+        self.run_for(0.1)
+        self.assertAlmostEqual(self.eng.rate_values["touchx"], 0.8, places=2)
+
+    def test_touch_and_stick_share_cc_10(self):
+        self.eng.feed(pad_state(leftx=1.0), self.t)
+        self.run_for(0.4)
+        self.eng.feed(pad_state(), self.t)
+        self.run_for(0.05)
+        stick = self.eng.rate_values["leftx"]
+        self.assertAlmostEqual(self.eng.rate_values["touchx"], stick)
+        self.assertAlmostEqual(self.eng.rate_values["gyroyaw"], stick)
+        vals = self.midi.cc(10)
+        self.assertEqual(len(vals), len(set(vals)), "one message per value, not one per axis")
+        self.assertEqual(vals, sorted(vals))
+
+    def test_touch_absolute_with_sensitivity(self):
+        m = self.eng.profile.axes["touchx"]
+        m.mode, m.span = "absolute", 0.5
+        self.eng.mapping_changed("touchx")
+        self.eng.feed(pad_state(touch=(1.0, 0.5)), self.t)
+        self.run_for(0.05)
+        self.eng.feed(pad_state(), self.t)
+        self.run_for(0.2)
+        self.assertEqual(self.midi.cc(10)[-1], 95, "right edge with span 0.5 = 0.75 → 95, held after lift")
+
+    def test_gyro_needs_its_button(self):
+        self.eng.feed(pad_state(gyroyaw=-0.5), self.t)
+        self.run_for(0.3)
+        self.assertEqual(self.midi.cc(10), [], "gyro without its button does nothing")
+        self.eng.profile.buttons["rightshoulder"].action = "gyro"
+        self.eng.feed(pad_state(buttons=("rightshoulder",), gyroyaw=-0.5), self.t)
+        self.run_for(0.3)
+        self.assertGreater(self.eng.rate_values["leftx"], 0.6, "gyro turns head 1 (inverted yaw)")
+        self.eng.feed(pad_state(gyroyaw=-0.5), self.t)
+        n = len(self.midi.sent)
+        self.run_for(0.3)
+        self.assertEqual(len(self.midi.sent), n, "button released → gyro stops")
+
+    def test_gyro_toggle(self):
+        b = self.eng.profile.buttons["touchpad"]
+        b.action, b.mode = "gyro", "toggle"
+        self.eng.feed(pad_state(buttons=("touchpad",)), self.t)
+        self.run_for(0.01)
+        self.eng.feed(pad_state(gyropitch=0.5), self.t)
+        self.run_for(0.2)
+        self.assertTrue(self.eng.gyro_active)
+        self.assertGreater(self.eng.rate_values["lefty"], 0.55)
+
+    def test_light_bar_follows_layer(self):
+        from engine import LAYER_COLORS
+        self.eng.profile.buttons["leftshoulder"].action = "modifier"
+        self.eng.feed(pad_state(), self.t)
+        self.run_for(0.01)
+        self.assertEqual(self.eng.led_color, LAYER_COLORS[0])
+        self.eng.feed(pad_state(buttons=("leftshoulder",)), self.t)
+        self.run_for(0.01)
+        self.assertEqual(self.eng.led_color, LAYER_COLORS[1])
+        self.eng.profile.options.led_layers = False
+        self.eng.feed(pad_state(), self.t)
+        self.run_for(0.01)
+        self.assertEqual(self.eng.led_color, LAYER_COLORS[1], "switched off: colour left alone")
+
+
+class AbsoluteStickTest(unittest.TestCase):
+    """Absolute sticks: sensitivity (span) and hold-on-release with pick-up."""
+
+    def setUp(self):
+        self.midi = FakeMidi()
+        p = default_profile()
+        m = p.axes["leftx"]
+        m.mode, m.hold, m.deadzone, m.curve = "absolute", True, 0.05, "linear"
+        self.eng = Engine(p, self.midi)
+        self.t = 0.0
+        self.eng.feed(("connected", "Pad", {}), self.t)
+        self.eng.feed(state(), self.t)
+        self.run_for(0.3)
+        self.midi.sent.clear()
+
+    def run_for(self, seconds, dt=0.004):
+        end = self.t + seconds
+        while self.t < end:
+            self.t += dt
+            self.eng.step(self.t)
+
+    def move(self, x, seconds=0.2, steps=20):
+        """Move the stick smoothly from where it is to x."""
+        start = self.eng.axes["leftx"]
+        for i in range(1, steps + 1):
+            self.eng.feed(state(leftx=start + (x - start) * i / steps), self.t)
+            self.run_for(seconds / steps)
+
+    def test_follows_then_holds_on_spring_back(self):
+        self.move(0.8)
+        held = self.midi.cc(10)[-1]
+        self.assertGreater(held, 100)
+        self.eng.feed(state(leftx=0.0), self.t)  # let go: the spring snaps it back
+        self.run_for(0.3)
+        self.assertEqual(self.midi.cc(10)[-1], held, "position kept")
+
+    def test_pick_up_without_jump(self):
+        self.move(0.8)
+        held = self.midi.cc(10)[-1]
+        self.eng.feed(state(leftx=0.0), self.t)
+        self.run_for(0.1)
+        n = len(self.midi.sent)
+        self.move(0.3, seconds=0.5)  # below the kept value: nothing happens
+        self.assertEqual(len(self.midi.sent), n)
+        self.move(0.95, seconds=0.5)  # passes the kept value → takes over smoothly
+        after = self.midi.cc(10)[n:]
+        self.assertTrue(after and abs(after[0] - held) <= 3, after[:3])
+        self.assertGreater(after[-1], held)
+
+    def test_slow_return_is_followed(self):
+        self.move(0.8)
+        self.move(0.3, seconds=1.0)  # a hand moving back slowly
+        self.assertLess(self.midi.cc(10)[-1], 90)
+
+    def test_span(self):
+        m = self.eng.profile.axes["leftx"]
+        m.hold, m.span = False, 0.5
+        self.eng.mapping_changed("leftx")
+        self.eng.feed(state(leftx=1.0), self.t)
+        self.run_for(0.05)
+        self.assertEqual(self.midi.cc(10)[-1], 95, "full deflection with span 0.5 = 0.75")
+
+    def test_l3_centers_held_absolute(self):
+        self.eng.profile.options.center_time = 0.5
+        self.move(0.9)
+        self.eng.feed(state(leftx=0.0), self.t)
+        self.run_for(0.1)
+        self.eng.feed(state(buttons=("leftstick",)), self.t)
+        self.run_for(0.7)
+        self.assertEqual(self.midi.cc(10)[-1], 64)
+
+
+class MigrationAndLabelsTest(unittest.TestCase):
+    def test_v3_profile_gets_free_notes_for_new_buttons(self):
+        from mapping import Profile
+        old = default_profile().to_json()
+        old["version"] = 3
+        for b in ("touchpad", "paddle1", "paddle2", "paddle3", "paddle4"):
+            del old["buttons"][b]
+        old["buttons"]["a"]["number"] = 52  # the user already uses note 52
+        p = Profile.from_json(old)
+        nums = [p.buttons[b].number for b in ("touchpad", "paddle1", "paddle2", "paddle3", "paddle4")]
+        self.assertNotIn(52, nums)
+        self.assertEqual(len(set(nums)), 5)
+
+    def test_family_labels(self):
+        import mapping
+        try:
+            mapping.set_family("playstation")
+            self.assertEqual(mapping.INPUT_LABELS["a"], "✕ Cross")
+            self.assertEqual(mapping.layer_label("leftshoulder"), "L1")
+            self.assertEqual(mapping.unreliable_inputs(), ("guide",))
+        finally:
+            mapping.set_family("xbox")
+        self.assertEqual(mapping.INPUT_LABELS["a"], "A")
+
+
 class ShapeTest(unittest.TestCase):
     def test_center_values(self):
         self.assertEqual(quantize(0.5, False), 64)
