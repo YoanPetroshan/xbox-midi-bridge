@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.venv-build/
+
+# Build output (the .zip is published as a GitHub release asset)
+build/
+dist/
+
+# macOS
+.DS_Store

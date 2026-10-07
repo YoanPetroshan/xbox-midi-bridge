@@ -1,0 +1,246 @@
+# Xbox MIDI Bridge
+
+**English** · [Български](README.bg.md)
+
+Turn an Xbox Series controller (Bluetooth or USB) into a MIDI controller for
+[Lightkey](https://lightkeyapp.com) on macOS. Every button and axis is programmable from a
+graphical interface, and the two sticks drive the Pan/Tilt of moving heads in **rate mode**:
+the stick sets the speed, and a released stick leaves the head where it is.
+
+![Xbox MIDI Bridge](docs/screenshot.png)
+
+## Features
+
+- **Virtual MIDI port** “Xbox MIDI Bridge”: Lightkey sees it directly, no IAC Driver needed.
+- **Works in the background** while Lightkey is the frontmost app.
+- **Rate mode for Pan/Tilt** with deadzone, expo curve, max speed and invert. No drift at center.
+- **L3 / R3 glide Pan/Tilt back to center** smoothly, with adjustable glide time.
+- **Modifiers and layers** (key combos): LB + X, D-pad ↑ + X and LB + D-pad ↑ + X are separate buttons.
+- **14-bit CC** (MSB on CC n, LSB on CC n+32) for finer movement.
+- Note / CC / Program Change, momentary / toggle / fixed value, any MIDI channel.
+- Live controller diagram, MIDI monitor, MIDI Learn, profiles, and a **test mode** for MIDI Learn in Lightkey.
+- No jumps on Bluetooth disconnect/reconnect; reconnects automatically.
+- Interface in **English and Bulgarian**; dark theme for dim venues.
+
+## Download
+
+Get `Xbox MIDI Bridge.zip` from the [latest release](../../releases/latest).
+Requires an **Apple Silicon Mac (M1 or newer) with macOS 15 Sequoia or later**.
+
+1. Unzip it and move `Xbox MIDI Bridge.app` to **Applications**.
+2. The app isn't signed with an Apple Developer certificate, so macOS blocks it on first
+   launch. Open it once, then go to **System Settings → Privacy & Security** →
+   “Xbox MIDI Bridge was blocked…” → **Open Anyway**. Or in Terminal:
+   ```bash
+   xattr -dr com.apple.quarantine "/Applications/Xbox MIDI Bridge.app"
+   ```
+3. Pair the controller over Bluetooth (see below).
+
+Settings and profiles live in `~/Library/Application Support/XboxMidiBridge/`
+(`profiles/*.json` and `settings.json`). Copy that folder to move your setup to another Mac.
+
+## Connecting the controller
+
+- **Bluetooth:** hold the pair button (top, next to the USB-C port) until the Xbox button
+  blinks fast → System Settings → Bluetooth → “Xbox Wireless Controller” → Connect.
+- **USB:** plug it in with a USB-C cable.
+- If the controller falls asleep, press the Xbox button. The app finds it again without a
+  restart and **sends no jumps**: it reads the current position first, then continues.
+
+> **Xbox and Share buttons:** over Bluetooth macOS often intercepts the Xbox button, and
+> Share may not be reported at all. They are marked “not detected” until they send an event.
+> Don't use them for important functions.
+
+## The interface
+
+- **Controller diagram.** Every input has a leader line to a label with its current mapping
+  (e.g. “Note 36 · Ch. 1 · Momentary” or “CC 10 · Rate · Pan 1”). Pressed buttons light up,
+  sticks show a dot at their real position, triggers fill up. Axes also show the value sent.
+- **Click a label** (or the part on the diagram) to open its editor. Changes apply
+  immediately and are saved automatically.
+- **Learn:** click “Learn”, then press a controller button to open its editor.
+- **L3 / R3:** glide Pan/Tilt of that stick back to the middle (64, or 8192 in 14-bit).
+  The glide time (0–10 s, default 1 s, 0 = instant) is set in Settings → “Glide to center”
+  or in the L3/R3 editor. It eases in and out; a clear stick movement (over 50%) cancels
+  it, a slight touch while clicking the stick does not.
+- **Center Pan/Tilt** (top right): the same glide for both heads at once. Each of the three
+  center functions can be assigned to any button (Function → “Center …”).
+- **Fine:** assign to a button (e.g. RB), Function → “Fine”. While held, the sticks move
+  ×0.25 (adjustable).
+- **MIDI monitor:** the messages actually sent, with pause.
+- **Lightkey test:** a slider per axis, no controller needed.
+- **Profiles:** new / duplicate / rename / delete / reset to default.
+- **Status bar:** controller, MIDI port, and whether data arrives in the background
+  (green once the app receives data while another window is in front).
+- **Language:** Settings → Language (Auto follows the macOS language). Applied on restart.
+
+### Axis parameters
+
+| Parameter | Meaning |
+|---|---|
+| Mode | **Rate**: deflection is speed; **Absolute**: position is the value (stick: center = 64) |
+| Deadzone | area around the center with no reaction (default 0.08), so there is no drift |
+| Curve | Linear or Exponential (amount 0–1: softer around the center for fine moves) |
+| Max speed | at full deflection: fraction of the range per second (0.50 = end to end in 2 s) |
+| 14-bit | MSB on CC n + LSB on CC n+32 (16384 steps instead of 128). CC 0–31 only |
+| Invert | reverses the direction |
+
+Pan/Tilt values are remembered between sessions (Settings → “Remember Pan/Tilt after
+restart”). With “Send them on startup” they are re-sent 1.5 s after launch.
+
+## Modifiers and layers
+
+Any button can be a **modifier** (like Shift). While it is held, the other buttons are in a
+new **layer** with their own values, so one button gives many commands:
+
+| You press | Layer | Example |
+|---|---|---|
+| X | Base | Note 38 |
+| LB + X | LB | CC 53 |
+| D-pad ↑ + X | D-pad ↑ | Note 70 |
+| LB + D-pad ↑ + X | LB + D-pad ↑ | Note 71 |
+
+**Rules**
+- A layer is the **combination** of held modifiers. The order doesn't change the layer:
+  LB then D-pad ↑ equals D-pad ↑ then LB (if both are modifiers).
+- A button's role **depends on the layer**. Example: in the base layer the D-pad sends CCs,
+  in the LB layer the D-pad is a modifier. Hold LB, then D-pad ↑, and you are in the
+  “LB + D-pad ↑” layer. Press the D-pad first and it sends its base-layer value.
+- A modifier from a lower layer **stays a modifier** in deeper layers (inherited). To make it
+  a normal button in some layer, open it there, tick “Enabled” and assign MIDI.
+- A modifier alone sends no MIDI.
+- A button with no value in a layer **does nothing** there (label “not set in this layer”).
+- Impossible D-pad combos (↑+↓, ←+→) don't create layers.
+- Sticks and LT/RT are shared by all layers.
+- Note Off is always correct: a button released after its modifier uses the layer it was
+  pressed in.
+
+**In the interface**
+1. Click LB → Function → **Modifier**. The **Layer** bar appears on top.
+2. Hold LB on the controller: the app switches to the “LB” layer and stays there
+   (or pick it from the drop-down).
+3. Click a button → set its value for this layer. Or **Fill empty**: every unassigned button
+   gets a free Note number (channel 1). Numbers used in any layer are skipped.
+4. For D-pad modifiers inside the LB layer: in the LB layer open D-pad ↑ → Function → Modifier.
+5. **Learn** works with layers: hold the modifiers and press the button. A modifier pressed
+   and released on its own opens the modifier itself.
+- Modifiers have a purple outline. If the same value (type, channel, number) is assigned
+  to two buttons, the label shows **“duplicate”**.
+
+## Default layout (channel 1)
+
+| Input | Type | Number |
+|---|---|---|
+| A / B / X / Y | Note momentary | 36 / 37 / 38 / 39 |
+| LB / RB | Note momentary | 40 / 41 |
+| View / Menu | Note momentary | 42 / 43 |
+| L3 / R3 | Center left / right stick (glide) | (no MIDI) |
+| D-pad ↑ ↓ ← → | Note momentary | 46 / 47 / 48 / 49 |
+| Xbox / Share | Note momentary | 50 / 51 |
+| Left stick X / Y | CC rate (Pan / Tilt 1) | CC 10 / 11 |
+| Right stick X / Y | CC rate (Pan / Tilt 2) | CC 12 / 13 |
+| LT / RT | CC absolute | CC 20 / 21 |
+
+Stick up = value increases (Y is flipped relative to SDL). If a head moves the wrong way,
+tick “Invert direction” for that axis.
+
+## Connecting to Lightkey
+
+The app creates a **virtual MIDI port “Xbox MIDI Bridge”**. It exists while the app is
+running; no IAC Driver is needed.
+
+1. Start Xbox MIDI Bridge (the port appears immediately).
+2. In Lightkey: **Lightkey → Settings… → External Control** and make sure the
+   “Xbox MIDI Bridge” input is enabled.
+3. Open the **External Control** window and click **MIDI**. Choose “Xbox MIDI Bridge” in the
+   Input menu. When you move a control, Lightkey creates a binding (e.g. “CC 10”) that you
+   assign an action to.
+
+### MIDI Learn for Pan/Tilt
+
+Lightkey learns the first message it receives. Move a stick diagonally and both CC 10 and
+CC 11 arrive. So:
+
+1. In Xbox MIDI Bridge open the **“Lightkey test”** tab.
+2. In Lightkey start creating a binding (External Control → MIDI).
+3. Move **only** the “Pan 1” slider: it sends CC 10 alone. Assign the head's Pan action.
+4. Repeat for Tilt 1 (CC 11), Pan 2 (CC 12) and Tilt 2 (CC 13).
+5. Only then use the sticks.
+
+> **Check on your rig:** whether Lightkey offers Pan/Tilt of your particular heads as a MIDI
+> binding action. The test mode exists for exactly this check.
+
+### 14-bit mode
+
+Lightkey's documentation describes support for 14-bit faders (16384 steps), i.e. the
+standard MSB/LSB pair. Enable “14-bit” on the axis **before** MIDI Learn in Lightkey and
+check with the test slider that the head moves smoothly. If Lightkey creates two separate
+bindings (CC 10 and CC 42) instead of one 14-bit binding, turn 14-bit off for that axis.
+
+### If Lightkey doesn't see the virtual port: IAC Driver
+
+1. Open **Audio MIDI Setup** → Window → **Show MIDI Studio**.
+2. Double-click **IAC Driver** → tick **Device is online** → Apply.
+3. In Xbox MIDI Bridge → Settings → MIDI output choose **“IAC Driver Bus 1”**.
+4. In Lightkey use the “IAC Driver Bus 1” input.
+
+## Running from source
+
+Requires Python 3.11 or 3.12 (Homebrew: `brew install python@3.12`).
+
+```bash
+git clone https://github.com/YoanPetroshan/xbox-midi-bridge.git
+cd xbox-midi-bridge
+python3.12 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+
+.venv/bin/python app.py                        # graphical interface
+.venv/bin/python app.py --diag                 # console diagnostics for the controller
+.venv/bin/python app.py --test-midi            # test CCs/notes to the virtual port
+.venv/bin/python -m unittest discover tests    # logic tests
+```
+
+### First check: `--diag`
+
+Run `python app.py --diag`, press every button and move the sticks and triggers. It prints
+the standard SDL names (`a`, `leftx`, `righttrigger`…). Then **click Lightkey (or any other
+app)** and keep pressing: each event shows which app is in front. Ctrl+C prints a summary of
+the detected inputs and whether background mode works.
+
+Test an IAC port from the console: `python app.py --test-midi --port "IAC Driver Bus 1"`.
+
+### Building the .app
+
+```bash
+./build_app.sh
+```
+
+Produces `dist/Xbox MIDI Bridge.app` and `dist/Xbox MIDI Bridge.zip` for **Apple Silicon,
+macOS 15+**. It uses the python.org Python 3.14 (`/Library/Frameworks/Python.framework`),
+because a Homebrew Python only runs on the macOS version it was built on, and it runs the
+tests first. The bundle contains pygame-ce (a full pygame fork with SDL 2.32), because pygame
+has no wheels for Python 3.14; python-rtmidi is compiled for macOS 12+.
+
+## How it works
+
+- `input_reader.py`: pygame / SDL2 Game Controller API in a **separate windowless process**
+  at 250 Hz, with `SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1`. The process is never frontmost,
+  so if it receives data at all, it also receives it while Lightkey is in front. The separate
+  process also avoids the SDL ↔ Qt conflict over the main Cocoa thread.
+- `engine.py`: a 250 Hz thread. Mapping → MIDI, rate-mode integration, layers, a limit of
+  N messages/s per axis (default 120), sends only on change.
+- `midi_out.py`: mido + python-rtmidi, virtual CoreMIDI port.
+- `mapping.py`: models, default layout, layers, JSON profiles.
+- `i18n.py`: English/Bulgarian strings (`tr("English", "Български")`).
+- `ui/`: PySide6 interface (diagram, editor popover, panels).
+- `XboxMidiBridge.spec`, `build_app.sh`: PyInstaller build. `assets/make_icon.py` draws the icon.
+
+Why not a web page with the Gamepad API: browsers stop delivering gamepad data to pages that
+aren't visible or focused, and Lightkey will be in front.
+
+## License
+
+[MIT](LICENSE) © YoanPetroshan
+
+Xbox is a trademark of Microsoft Corporation. Lightkey is a trademark of its respective owner.
+This project is not affiliated with or endorsed by either.
