@@ -33,6 +33,7 @@ the stick sets the speed, and a released stick leaves the head where it is.
 - Note / CC / Program Change, momentary / toggle / fixed value, any MIDI channel.
 - Live controller diagram, MIDI monitor, MIDI Learn, profiles, and a **test mode** for MIDI Learn in Lightkey.
 - No jumps on Bluetooth disconnect/reconnect; reconnects automatically.
+- **Updates itself** from GitHub releases and shows what's new.
 - Interface in **English and Bulgarian**; dark theme for dim venues.
 
 ## Download
@@ -51,6 +52,23 @@ Requires an **Apple Silicon Mac (M1 or newer) with macOS 15 Sequoia or later**.
 
 Settings and profiles live in `~/Library/Application Support/XboxMidiBridge/`
 (`profiles/*.json` and `settings.json`). Copy that folder to move your setup to another Mac.
+
+## Updates
+
+From version 1.3.0 the app keeps itself up to date:
+
+- At startup it asks GitHub for the latest release (Settings → “Check for updates at startup”;
+  or click **Check for updates** any time). Nothing about you is sent besides the usual web request.
+- If there is a newer version it shows **what's new** and offers **Update now**, **Later** or
+  **Skip this version**.
+- **Update now** downloads the release, checks that it is this app (bundle id, version, intact
+  signature), closes the app, swaps it in place and starts the new version. If the swap fails,
+  the old version is put back. Updates installed this way don't trigger the “Open Anyway” prompt.
+- After an update, **What's new** lists the changes since the version you had (also available in
+  Settings → What's new).
+- From the command line: `--check-update` prints the installed and the latest version.
+
+Versions before 1.3.0 can't update themselves: download 1.3.0 once by hand.
 
 ## Connecting the controller
 
@@ -288,6 +306,7 @@ has no wheels for Python 3.14; python-rtmidi is compiled for macOS 12+.
   N messages/s per axis (default 120), sends only on change.
 - `midi_out.py`: mido + python-rtmidi, virtual CoreMIDI port.
 - `mapping.py`: models, default layout, layers, JSON profiles.
+- `updater.py`, `ui/update_dialog.py`, `changelog.py`, `version.py`: update check, self-update and what's new.
 - `i18n.py`: English/Bulgarian strings (`tr("English", "Български")`).
 - `ui/`: PySide6 interface (diagram, editor popover, panels).
 - `XboxMidiBridge.spec`, `build_app.sh`: PyInstaller build. `assets/make_icon.py` draws the icon.

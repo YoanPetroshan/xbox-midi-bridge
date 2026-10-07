@@ -156,12 +156,29 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=tr("Xbox controller → MIDI bridge for Lightkey", "Xbox контролер → MIDI мост за Lightkey"))
     ap.add_argument("--diag", action="store_true", help=tr("console diagnostics for the controller", "конзолна диагностика на контролера"))
     ap.add_argument("--test-midi", action="store_true", help=tr("send test CCs/notes to the MIDI port", "тестови CC/ноти към MIDI порта"))
+    ap.add_argument("--check-update", action="store_true",
+                    help=tr("check GitHub for a newer version", "проверка в GitHub за нова версия"))
     ap.add_argument("--port", help=tr("existing MIDI output instead of the virtual one (e.g. 'IAC Driver Bus 1')",
                                     "съществуващ MIDI изход вместо виртуалния (напр. 'IAC Driver Bus 1')"))
     args = ap.parse_args()
 
     if args.diag:
         return run_diag()
+    if args.check_update:
+        import updater
+        from version import APP_VERSION
+        try:
+            rel = updater.fetch_latest()
+        except updater.UpdateError as e:
+            print(tr("Could not reach GitHub: {}", "Няма връзка с GitHub: {}").format(e))
+            return 1
+        newer = updater.is_newer(rel.version)
+        print(tr("Installed: {} · latest on GitHub: {} · {}", "Инсталирана: {} · последна в GitHub: {} · {}").format(
+            APP_VERSION, rel.version,
+            tr("update available", "има обновление") if newer else tr("up to date", "актуална")))
+        if newer:
+            print(rel.page)
+        return 0
     if args.test_midi:
         from midi_out import run_midi_test
         return run_midi_test(args.port)

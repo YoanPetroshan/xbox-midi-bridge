@@ -206,6 +206,12 @@ def reader_main(conn, poll_hz: int = POLL_HZ) -> None:
     import signal
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # Ctrl+C is handled by the parent
     _setup_sdl_env()
+
+    def send(msg):
+        try:
+            conn.send(msg)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            raise SystemExit(0)  # the app is gone: stop quietly
     try:
         import pygame
         from pygame._sdl2 import controller as sdlc
@@ -215,7 +221,7 @@ def reader_main(conn, poll_hz: int = POLL_HZ) -> None:
         sdlc.init()
         _hide_from_dock()  # SDL may have reset the policy during video init
     except Exception as e:  # pragma: no cover - environment dependent
-        conn.send(("error", tr("pygame/SDL failed to start: {}", "pygame/SDL не стартира: {}").format(e)))
+        send(("error", tr("pygame/SDL failed to start: {}", "pygame/SDL не стартира: {}").format(e)))
         return
 
     extras = SdlExtras()
@@ -247,7 +253,7 @@ def reader_main(conn, poll_hz: int = POLL_HZ) -> None:
             cptr = None
             info = {}
             last_state = None
-            conn.send(("disconnected",))
+            send(("disconnected",))
 
     def device_name(i: int) -> str:
         # pygame has name_forindex, pygame-ce (used in the .app build) does not.
@@ -273,13 +279,18 @@ def reader_main(conn, poll_hz: int = POLL_HZ) -> None:
                 out.append(device_name(i))
             except Exception as e:
                 out.append(tr("Controller {}", "Контролер {}").format(i))
-                conn.send(("error", tr("Device name {}: {}", "Име на устройство {}: {}").format(i, e)))
+                send(("error", tr("Device name {}: {}", "Име на устройство {}: {}").format(i, e)))
         return out
 
     while True:
         t0 = time.perf_counter()
-        while conn.poll():
-            msg = conn.recv()
+        try:
+            pending = []
+            while conn.poll():
+                pending.append(conn.recv())
+        except (EOFError, OSError):
+            return  # the app is gone (quit or killed): stop quietly
+        for msg in pending:
             if msg[0] == "quit":
                 close_ctrl()
                 return
@@ -315,7 +326,7 @@ def reader_main(conn, poll_hz: int = POLL_HZ) -> None:
             devices = list_devices()
             if devices != last_devices:
                 last_devices = devices
-                conn.send(("devices", devices))
+                send(("devices", devices))
             if ctrl is None and devices:
                 idx_list = controller_indices()
                 pick = idx_list[0] if idx_list else None
@@ -337,10 +348,10 @@ def reader_main(conn, poll_hz: int = POLL_HZ) -> None:
                         info = extras.info(cptr, ctrl.name)
                     except Exception:
                         cptr, info = None, extras.info(None, ctrl.name)
-                    conn.send(("connected", ctrl.name, mapping, info))
+                    send(("connected", ctrl.name, mapping, info))
                 except Exception as e:
                     ctrl = None
-                    conn.send(("error", tr("Could not open the controller: {}", "Контролерът не можа да се отвори: {}").format(e)))
+                    send(("error", tr("Could not open the controller: {}", "Контролерът не можа да се отвори: {}").format(e)))
 
         if ctrl is not None:
             try:
@@ -362,7 +373,7 @@ def reader_main(conn, poll_hz: int = POLL_HZ) -> None:
                 state = (buttons, axes, down)
                 if state != last_state:
                     last_state = state
-                    conn.send(("state", buttons, axes, down))
+                    send(("state", buttons, axes, down))
             except Exception:
                 close_ctrl()
                 rescan = True

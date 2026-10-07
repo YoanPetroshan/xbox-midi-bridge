@@ -161,6 +161,8 @@ class SettingsPanel(QWidget):
     resendRequested = Signal()
     languageChosen = Signal(str)
     viewChosen = Signal(str)
+    checkUpdatesRequested = Signal()
+    whatsNewRequested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -252,6 +254,27 @@ class SettingsPanel(QWidget):
         self.language.setToolTip(tr("Applied after restarting the app.", "Прилага се след рестарт на приложението."))
         self.language.activated.connect(lambda _: self.languageChosen.emit(self.language.currentData()))
         form.addRow(tr("Language", "Език"), self.language)
+
+        from version import APP_VERSION
+        upd_row = QHBoxLayout()
+        upd_row.setContentsMargins(0, 0, 0, 0)
+        upd_row.addWidget(QLabel(APP_VERSION))
+        check = QPushButton(tr("Check for updates", "Провери за обновления"))
+        check.clicked.connect(self.checkUpdatesRequested.emit)
+        upd_row.addWidget(check, 1)
+        news = QPushButton(tr("What's new", "Какво е новото"))
+        news.clicked.connect(self.whatsNewRequested.emit)
+        upd_row.addWidget(news)
+        upd_wrap = QWidget()
+        upd_wrap.setLayout(upd_row)
+        form.addRow(tr("Version", "Версия"), upd_wrap)
+        self.auto_update = QCheckBox(tr("Check for updates at startup", "Проверявай за обновления при старт"))
+        self.auto_update.setToolTip(tr("Asks GitHub for the latest release when the app starts (no account, "
+                                       "nothing about you is sent besides the usual web request).",
+                                       "При старт пита GitHub за последната версия (без акаунт; не се "
+                                       "изпраща нищо за теб освен обичайната уеб заявка)."))
+        self.auto_update.toggled.connect(lambda *_: self.changed.emit())
+        form.addRow("", self.auto_update)
 
         note = QLabel(tr("If Lightkey doesn't see “Xbox MIDI Bridge”, choose the IAC Driver as output "
                          "(see README). Pan/Tilt values are shared by all profiles.",

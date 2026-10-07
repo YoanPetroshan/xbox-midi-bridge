@@ -467,6 +467,7 @@ class ProfileStore:
             "rate_values": {},  # {axis: 0..1}, shared by all profiles (physical head position)
             "seen_inputs": [],
         }
+        self.fresh_install = not self.settings_file.exists()  # first run on this Mac
         try:
             data = json.loads(self.settings_file.read_text("utf-8"))
             if isinstance(data, dict):

@@ -22,6 +22,8 @@ from ui import theme
 from ui.controller_view import ControllerView
 from ui.panels import MonitorPanel, SettingsPanel, TestPanel
 from ui.popover import MappingPopover
+from ui.update_dialog import UpdateController, show_whats_new
+from version import APP_VERSION
 
 UI_HZ = 30
 
@@ -29,7 +31,7 @@ UI_HZ = 30
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Xbox MIDI Bridge")
+        self.setWindowTitle(f"Xbox MIDI Bridge {APP_VERSION}")
         self.resize(1500, 860)
 
         self.store = ProfileStore()
@@ -96,6 +98,13 @@ class MainWindow(QMainWindow):
         self.timer.setInterval(int(1000 / UI_HZ))
         self.timer.timeout.connect(self.tick)
         self.timer.start()
+
+        self.updates = UpdateController(self, self.store.settings, self.store.save_settings, self.close)
+        self.settings_panel.checkUpdatesRequested.connect(lambda: self.updates.check(manual=True))
+        self.settings_panel.whatsNewRequested.connect(lambda: show_whats_new(self, None))
+        self._whats_new_after_update()
+        if st.get("auto_update_check", True):
+            QTimer.singleShot(3000, self.updates.check)
 
         if st.get("persist_rate_values") and st.get("resend_on_start"):
             # Give Lightkey time to see the virtual port.
@@ -172,8 +181,26 @@ class MainWindow(QMainWindow):
         sp.led.blockSignals(True)
         sp.led.setChecked(self.profile.options.led_layers)
         sp.led.blockSignals(False)
+        sp.auto_update.blockSignals(True)
+        sp.auto_update.setChecked(bool(st.get("auto_update_check", True)))
+        sp.auto_update.blockSignals(False)
         sp.view_family.setCurrentIndex(max(0, sp.view_family.findData(st.get("view_family", "auto"))))
         sp.viewChosen.connect(self._choose_view)
+
+    def _whats_new_after_update(self):
+        """First start of a newer version: show what changed since the last version seen."""
+        import updater
+        st = self.store.settings
+        last = st.get("last_seen_version")
+        if last is None and self.store.fresh_install:
+            last = APP_VERSION  # brand-new install: nothing to tell
+        elif last is None:
+            last = "1.2.0"  # used the app before this was tracked (1.2.0 or older)
+        if updater.is_newer(APP_VERSION, last):
+            QTimer.singleShot(700, lambda: show_whats_new(self, last))
+        if st.get("last_seen_version") != APP_VERSION:
+            st["last_seen_version"] = APP_VERSION
+            self.store.save_settings()
 
     # ---------------------------------------------------------------- controller family
     def _choose_view(self, code: str):
@@ -224,6 +251,7 @@ class MainWindow(QMainWindow):
             self.engine._led_layer = None  # repaint the light bar
         self.store.settings["persist_rate_values"] = sp.persist.isChecked()
         self.store.settings["resend_on_start"] = sp.resend.isChecked()
+        self.store.settings["auto_update_check"] = sp.auto_update.isChecked()
         sp.resend.setEnabled(sp.persist.isChecked())
         self.store.save_settings()
         self._save_timer.start()

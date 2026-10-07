@@ -11,7 +11,7 @@ if [ ! -x .venv-build/bin/python ]; then
   .venv-build/bin/pip install -q --upgrade pip
   # python-rtmidi has no wheel for 3.14 → compile it for macOS 12+.
   SDKROOT=$SDK MACOSX_DEPLOYMENT_TARGET=12.0 .venv-build/bin/pip install -q python-rtmidi
-  .venv-build/bin/pip install -q --only-binary=:all: pygame-ce mido PySide6-Essentials pyinstaller
+  .venv-build/bin/pip install -q --only-binary=:all: pygame-ce mido PySide6-Essentials pyinstaller certifi
 fi
 
 .venv-build/bin/python -m unittest discover tests
