@@ -159,6 +159,11 @@ def _setup_sdl_env() -> None:
     os.environ["SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS"] = "1"
     os.environ["SDL_MAC_BACKGROUND_APP"] = "1"  # no Dock icon for the reader process
     os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
+    # Over Bluetooth a DualSense / DualShock 4 starts in a "simple" report mode that leaves out
+    # the Mic button, the touchpad position, the gyro and light bar control. These hints make
+    # SDL switch it to the full report mode as soon as it is opened (SDL_hidapi_ps5.c / ps4.c).
+    os.environ["SDL_JOYSTICK_HIDAPI_PS5_RUMBLE"] = "1"
+    os.environ["SDL_JOYSTICK_HIDAPI_PS4_RUMBLE"] = "1"
 
 
 def _hide_from_dock() -> None:

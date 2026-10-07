@@ -216,8 +216,9 @@ a controller you don't have at hand. Profiles work with both: the buttons are th
 - **DualSense Edge** back buttons and Fn buttons (and the Xbox Elite paddles) appear as
   Paddle 1–4 when the controller reports them.
 
-> PlayStation support is covered by automated tests but has not yet been tried on a real DualSense.
-> If you have one, run `--diag` and please open an issue with the result.
+> Works over USB and Bluetooth. Over Bluetooth the controller is switched to its full report mode
+> (since 1.3.1); without it macOS gets no Mic button, touchpad position or gyro.
+> If something doesn't work with your controller, run `--diag` and please open an issue with the output.
 
 ## Connecting to Lightkey
 

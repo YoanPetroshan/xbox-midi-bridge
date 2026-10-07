@@ -9,6 +9,18 @@ from i18n import LANG
 from updater import parse_version
 
 CHANGES: dict[str, tuple[list[str], list[str]]] = {
+    "1.3.1": (
+        [
+            "**Fixed: PlayStation controllers over Bluetooth.** The DualSense / DualShock 4 is now "
+            "switched to its full report mode, so the **Mic (mute) button**, the touchpad position, "
+            "the gyro and the light bar work over Bluetooth too (before, they only worked over USB).",
+        ],
+        [
+            "**Поправено: PlayStation контролери по Bluetooth.** DualSense / DualShock 4 вече се "
+            "превключва в пълен режим, така че **бутонът Mic (заглушаване)**, позицията на тъчпада, "
+            "жироскопът и светлинната лента работят и по Bluetooth (преди работеха само по USB).",
+        ],
+    ),
     "1.3.0": (
         [
             "**Automatic updates:** the app checks GitHub for a new version at startup and can "

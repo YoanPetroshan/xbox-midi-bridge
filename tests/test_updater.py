@@ -135,3 +135,14 @@ class ChangelogTest(unittest.TestCase):
         import changelog
         from version import APP_VERSION
         self.assertTrue(changelog.items(APP_VERSION), "add a changelog entry for every release")
+
+
+class SdlEnvTest(unittest.TestCase):
+    def test_playstation_full_report_mode_requested(self):
+        """Without these hints a Bluetooth DualSense never reports Mic, touchpad position or gyro."""
+        import os
+        from input_reader import _setup_sdl_env
+        _setup_sdl_env()
+        self.assertEqual(os.environ.get("SDL_JOYSTICK_HIDAPI_PS5_RUMBLE"), "1")
+        self.assertEqual(os.environ.get("SDL_JOYSTICK_HIDAPI_PS4_RUMBLE"), "1")
+        self.assertEqual(os.environ.get("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS"), "1")
