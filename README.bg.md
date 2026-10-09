@@ -2,6 +2,13 @@
 
 [English](README.md) · **Български**
 
+## ⬇️ [Изтегли за Mac](https://github.com/YoanPetroshan/xbox-midi-bridge/releases/latest/download/Xbox.MIDI.Bridge.zip)
+
+Apple Silicon (M1 и нагоре) · macOS 15 или по-нов · безплатно · [всички версии](../../releases)
+
+Разархивирай, премести **Xbox MIDI Bridge.app** в Applications и го отвори. При първото
+пускане macOS иска потвърждение: виж [Изтегляне](#изтегляне) по-долу.
+
 Превръща Xbox Series или PlayStation (DualSense / DualShock 4) контролер, по Bluetooth или USB,
 в MIDI контролер за
 [Lightkey](https://lightkeyapp.com) на macOS. Всеки бутон и всяка ос се програмират от
@@ -38,7 +45,8 @@
 
 ## Изтегляне
 
-Изтегли `Xbox MIDI Bridge.zip` от [последната версия](../../releases/latest).
+Изтегли [`Xbox MIDI Bridge.zip`](https://github.com/YoanPetroshan/xbox-midi-bridge/releases/latest/download/Xbox.MIDI.Bridge.zip) (винаги последната версия) или разгледай
+[страницата с версиите](../../releases).
 Нужен е **Mac с Apple Silicon (M1 и нагоре) и macOS 15 Sequoia или по-нов**.
 
 1. Разархивирай и премести `Xbox MIDI Bridge.app` в **Applications**.

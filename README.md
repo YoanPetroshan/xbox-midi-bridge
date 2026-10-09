@@ -2,6 +2,13 @@
 
 **English** · [Български](README.bg.md)
 
+## ⬇️ [Download for Mac](https://github.com/YoanPetroshan/xbox-midi-bridge/releases/latest/download/Xbox.MIDI.Bridge.zip)
+
+Apple Silicon (M1 or newer) · macOS 15 or later · free · [all versions](../../releases)
+
+Unzip, move **Xbox MIDI Bridge.app** to Applications, and open it. The first time, macOS asks
+for confirmation: see [Download](#download) below.
+
 Turn an Xbox Series or PlayStation (DualSense / DualShock 4) controller, over Bluetooth or USB,
 into a MIDI controller for
 [Lightkey](https://lightkeyapp.com) on macOS. Every button and axis is programmable from a
@@ -38,7 +45,8 @@ the stick sets the speed, and a released stick leaves the head where it is.
 
 ## Download
 
-Get `Xbox MIDI Bridge.zip` from the [latest release](../../releases/latest).
+Get [`Xbox MIDI Bridge.zip`](https://github.com/YoanPetroshan/xbox-midi-bridge/releases/latest/download/Xbox.MIDI.Bridge.zip) (always the latest version), or browse the
+[releases page](../../releases).
 Requires an **Apple Silicon Mac (M1 or newer) with macOS 15 Sequoia or later**.
 
 1. Unzip it and move `Xbox MIDI Bridge.app` to **Applications**.
